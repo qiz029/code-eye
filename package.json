@@ -3,6 +3,7 @@
 	"version": "0.1.0",
 	"description": "GitHub-style code review panel for the pi coding agent: per-commit diffs and agent-guided walkthroughs in the TUI",
 	"keywords": ["pi-package"],
+	"license": "Apache-2.0",
 	"type": "module",
 	"repository": {
 		"type": "git",
