@@ -13,6 +13,12 @@ Review your changes commit by commit in a two-pane TUI overlay — commit list o
 ## Installation
 
 ```bash
+pi install npm:@toddzheng024/code-eye
+```
+
+Or from the git repo:
+
+```bash
 pi install git:github.com/qiz029/code-eye
 ```
 
@@ -20,7 +26,7 @@ Or add it to `~/.pi/agent/settings.json`:
 
 ```json
 {
-	"packages": ["git:github.com/qiz029/code-eye"]
+	"packages": ["npm:@toddzheng024/code-eye"]
 }
 ```
 
