@@ -1,27 +1,47 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { CommentStore, formatCommentsForAgent, type ReviewComment } from "./comments";
 import { listReviewItems, loadDiff } from "./git";
 import { ReviewView } from "./review-view";
 import type { WalkthroughStop } from "./walkthrough";
 
-const WALKTHROUGH_PROMPT = `Please give me a guided walkthrough of the current changes. Inspect the uncommitted changes (git diff HEAD) and the commits in the base..HEAD range (git log, git show), then call the \`review\` tool with a summary and an ordered list of walkthrough stops: the key changes, design decisions, and risky spots I should pay attention to. For each stop provide the commit sha (short, empty for uncommitted changes), file, new-side line number, a short title, and the context I need to evaluate it.`;
+const WALKTHROUGH_PROMPT = `Please give me a guided walkthrough of the current changes. Inspect the uncommitted changes (git diff HEAD) and the commits in the base..HEAD range (git log, git show), then call the \`review\` tool with a summary and an ordered list of walkthrough stops: the key changes, design decisions, and risky spots I should pay attention to.
+
+For each stop provide:
+- sha: short commit sha from git log (omit or empty for uncommitted changes)
+- file: path exactly as it appears in the diff header (repo-relative, e.g. src/foo.ts — not absolute)
+- line: line number on the NEW side of the file (the number after + in the @@ hunk header, counting added/context lines)
+- title: short headline
+- detail: the context I need to evaluate it
+- kind: optional tag like change / risk / note
+
+Only point stops at lines that actually appear in the diff (added or context lines). Prefer the first changed line of each conceptual edit.`;
+
+/** Session-scoped: comments survive reopen until the pi process exits. */
+const commentStore = new CommentStore();
 
 function textResult(text: string) {
 	return { content: [{ type: "text" as const, text }], details: {} };
 }
 
-/** Open the review overlay. Returns false when there is nothing to review. */
+interface OpenReviewOptions {
+	stops?: WalkthroughStop[];
+	/** When true and the user left comments, inject them into the chat as a follow-up. */
+	sendCommentsAsFollowUp?: boolean;
+}
+
+/** Open the review overlay. Returns null when there is nothing to review. */
 async function openReview(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
-	stops?: WalkthroughStop[],
-): Promise<boolean> {
+	opts: OpenReviewOptions = {},
+): Promise<{ comments: ReviewComment[] } | null> {
 	const items = await listReviewItems(ctx.cwd);
-	if (items.length === 0) return false;
+	if (items.length === 0) return null;
 
 	const initialDiff = await loadDiff(ctx.cwd, items[0]!.sha);
-	await ctx.ui.custom<null>(
+	const result = await ctx.ui.custom<{ comments: ReviewComment[] }>(
 		(tui, theme, _keybindings, done) =>
 			new ReviewView({
 				items,
@@ -31,9 +51,10 @@ async function openReview(
 				tui,
 				done,
 				termRows: tui.terminal.rows,
-				stops,
+				stops: opts.stops,
+				initialComments: commentStore.list(),
 				onRequestWalkthrough: () => {
-					done(null);
+					// Walkthrough request closes the panel via done path; send prompt after.
 					pi.sendUserMessage(WALKTHROUGH_PROMPT, { deliverAs: "followUp" });
 				},
 			}),
@@ -42,7 +63,15 @@ async function openReview(
 			overlayOptions: { width: "95%", maxHeight: "90%", anchor: "center" },
 		},
 	);
-	return true;
+
+	const comments = result?.comments ?? [];
+	commentStore.replace(comments);
+
+	if (opts.sendCommentsAsFollowUp && comments.length > 0) {
+		pi.sendUserMessage(formatCommentsForAgent(comments), { deliverAs: "followUp" });
+	}
+
+	return { comments };
 }
 
 export default function (pi: ExtensionAPI) {
@@ -51,8 +80,17 @@ export default function (pi: ExtensionAPI) {
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) return;
 			try {
-				if (!(await openReview(pi, ctx))) {
-					ctx.ui.notify("Nothing to review: no uncommitted changes and no commits in base..HEAD", "info");
+				const opened = await openReview(pi, ctx, { sendCommentsAsFollowUp: true });
+				if (!opened) {
+					ctx.ui.notify(
+						"Nothing to review: no uncommitted changes and no commits in base..HEAD",
+						"info",
+					);
+				} else if (opened.comments.length > 0) {
+					ctx.ui.notify(
+						`Sent ${opened.comments.length} comment(s) to the agent`,
+						"info",
+					);
 				}
 			} catch (err) {
 				ctx.ui.notify(`code-eye: ${err instanceof Error ? err.message : String(err)}`, "error");
@@ -75,7 +113,8 @@ export default function (pi: ExtensionAPI) {
 			"Open an interactive code review panel for the user, optionally with a guided walkthrough of the key changes. " +
 			"Use this after making changes when the user should review your work. The panel shows commits in base..HEAD " +
 			"and uncommitted changes; walkthrough stops point the user at the most important or risky spots. " +
-			"The tool blocks until the user closes the panel.",
+			"The user can leave line comments (c to comment, d to delete, [/] to jump). " +
+			"The tool blocks until the user closes the panel and returns any comments they left — address each one.",
 		parameters: Type.Object({
 			summary: Type.Optional(Type.String({ description: "One-paragraph overview of what changed and why" })),
 			stops: Type.Optional(
@@ -84,7 +123,9 @@ export default function (pi: ExtensionAPI) {
 						title: Type.String({ description: "Short headline for this stop" }),
 						detail: Type.String({ description: "Why this needs attention; context the user needs" }),
 						sha: Type.Optional(
-							Type.String({ description: "Short commit sha this stop belongs to; omit for uncommitted changes" }),
+							Type.String({
+								description: "Short commit sha this stop belongs to; omit for uncommitted changes",
+							}),
 						),
 						file: Type.Optional(Type.String({ description: "File path within that commit's diff" })),
 						line: Type.Optional(Type.Number({ description: "Line number in the new version of the file" })),
@@ -103,12 +144,15 @@ export default function (pi: ExtensionAPI) {
 			}
 			if (params.stops) stops.push(...params.stops);
 
-			const opened = await openReview(pi, ctx, stops.length > 0 ? stops : undefined);
-			return textResult(
-				opened
-					? "The user reviewed the changes in the review panel and closed it."
-					: "Nothing to review: no uncommitted changes and no commits in base..HEAD.",
-			);
+			// Tool path: comments come back in the tool result (no extra follow-up message).
+			const opened = await openReview(pi, ctx, {
+				stops: stops.length > 0 ? stops : undefined,
+				sendCommentsAsFollowUp: false,
+			});
+			if (!opened) {
+				return textResult("Nothing to review: no uncommitted changes and no commits in base..HEAD.");
+			}
+			return textResult(formatCommentsForAgent(opened.comments));
 		},
 		renderCall(args, theme) {
 			const n = args.stops?.length ?? 0;
@@ -122,7 +166,12 @@ export default function (pi: ExtensionAPI) {
 		renderResult(result, { isPartial }, theme) {
 			if (isPartial) return new Text(theme.fg("warning", "Waiting for user review…"), 0, 0);
 			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
-			return new Text(theme.fg("success", `✓ ${text}`), 0, 0);
+			const hasComments = /left \d+ comment/.test(text);
+			return new Text(
+				hasComments ? theme.fg("warning", `✓ ${text.split("\n")[0]}`) : theme.fg("success", `✓ ${text}`),
+				0,
+				0,
+			);
 		},
 	});
 }
