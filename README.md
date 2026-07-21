@@ -53,8 +53,17 @@ Inside the panel:
 | `Tab` / `Enter` / `←` | Switch between panes |
 | `PgUp`/`PgDn` | Page through the diff |
 | `n` / `p` | Next / previous walkthrough stop (when a walkthrough is active) |
+| `c` / `Enter` | Add or edit a comment on the current diff line (add/del/context only) |
+| `d` | Delete the comment on the current line |
+| `[` / `]` | Jump to previous / next comment |
 | `w` | Ask the agent for a walkthrough (when none is active) |
-| `Esc` | Close the panel |
+| `Esc` | Close the panel (and submit any comments) |
+
+**Line comments.** Move to a changed line, press `c` (or `Enter` on a commentable line), type your note, and press `Enter` to save. Lines with comments are marked `●`; the body peeks under the cursor. Comments stay in the session if you reopen the panel.
+
+When you close the panel:
+- If the agent opened it via the `review` tool, comments come back in the tool result for the agent to address.
+- If you opened it with `/code-eye`, any comments are sent to the agent as a follow-up message.
 
 The agent can also open the panel itself via the `review` tool, optionally passing a summary and walkthrough stops. The tool blocks until you close the panel, so the conversation picks up right after your review.
 
