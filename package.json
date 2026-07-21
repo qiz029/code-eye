@@ -1,8 +1,10 @@
 {
 	"name": "@toddzheng024/code-eye",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "GitHub-style code review panel for the pi coding agent: per-commit diffs and agent-guided walkthroughs in the TUI",
-	"keywords": ["pi-package"],
+	"keywords": [
+		"pi-package"
+	],
 	"license": "Apache-2.0",
 	"publishConfig": {
 		"access": "public"
@@ -13,7 +15,9 @@
 		"url": "https://github.com/qiz029/code-eye.git"
 	},
 	"pi": {
-		"extensions": ["./index.ts"]
+		"extensions": [
+			"./index.ts"
+		]
 	},
 	"dependencies": {
 		"typebox": "^1.1.38"
@@ -26,6 +30,11 @@
 		"@earendil-works/pi-coding-agent": "^0.80.7",
 		"@earendil-works/pi-tui": "^0.80.7",
 		"@types/node": "^26.1.1",
-		"typescript": "^5.9.3"
+		"typescript": "^5.9.3",
+		"tsx": "^4.19.0"
+	},
+	"scripts": {
+		"typecheck": "tsc --noEmit",
+		"test": "npx tsx --test comments.test.ts locate.test.ts"
 	}
 }
