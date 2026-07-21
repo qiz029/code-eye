@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -73,4 +75,28 @@ export async function loadDiff(cwd: string, sha: string | null): Promise<string>
 		return git(cwd, ["diff", "HEAD"]);
 	}
 	return git(cwd, ["show", "--format=", "--patch", sha]);
+}
+
+/**
+ * Load the full content of one file at a review item, for expanding the
+ * context hidden between diff hunks. Returns null when the file does not
+ * exist on that side (added/deleted file, no parent commit, bad path).
+ */
+export async function loadFileContent(
+	cwd: string,
+	sha: string | null,
+	file: string,
+	side: "new" | "old",
+): Promise<string | null> {
+	// Guard against path traversal — file comes from the web client.
+	if (file.startsWith("/") || file.split("/").includes("..")) return null;
+	try {
+		if (side === "new" && sha === null) {
+			return await readFile(join(cwd, file), "utf8");
+		}
+		const ref = side === "new" ? `${sha}:${file}` : sha === null ? `HEAD:${file}` : `${sha}^:${file}`;
+		return await git(cwd, ["show", ref]);
+	} catch {
+		return null;
+	}
 }

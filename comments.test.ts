@@ -62,6 +62,7 @@ test("upsertComment replaces same line; empty body deletes", () => {
 test("find/remove by key", () => {
 	const a = {
 		id: "1",
+		author: "user" as const,
 		sha: "abc",
 		file: "f.ts",
 		side: "new" as const,
@@ -72,13 +73,28 @@ test("find/remove by key", () => {
 	const list = [a, b];
 	assert.equal(findCommentAt(list, a)?.body, "hi");
 	assert.equal(removeCommentAt(list, a).length, 1);
-	assert.equal(commentKey(a), ["abc", "f.ts", "new", "3"].join("\0"));
+	assert.equal(commentKey(a), ["user", "abc", "f.ts", "new", "3"].join("\0"));
+});
+
+test("user and agent comments can share a line (ADR-0001)", () => {
+	const anchor = { sha: null as string | null, file: "src/a.ts", side: "new" as const, line: 11 };
+	const agent: ReviewComment = { id: "a1", author: "agent", ...anchor, body: "note" };
+	let list: ReviewComment[] = [agent];
+	list = upsertComment(list, anchor, "user note", () => "u1");
+	assert.equal(list.length, 2);
+	assert.equal(findCommentAt(list, anchor, "agent")?.body, "note");
+	assert.equal(findCommentAt(list, anchor, "user")?.body, "user note");
+	// Deleting the user comment keeps the agent note.
+	list = removeCommentAt(list, anchor, "user");
+	assert.equal(list.length, 1);
+	assert.equal(list[0]!.author, "agent");
 });
 
 test("findCommentLineIndex lands on anchored diff line", () => {
 	const lines = parseUnifiedDiff(sampleDiff);
 	const comment: ReviewComment = {
 		id: "1",
+		author: "user",
 		sha: null,
 		file: "src/a.ts",
 		side: "new",
@@ -94,6 +110,7 @@ test("formatCommentsForAgent lists locations and bodies", () => {
 	const text = formatCommentsForAgent([
 		{
 			id: "1",
+			author: "user",
 			sha: "abc123",
 			file: "src/a.ts",
 			side: "new",
@@ -106,5 +123,11 @@ test("formatCommentsForAgent lists locations and bodies", () => {
 	assert.match(text, /src\/a\.ts:11/);
 	assert.match(text, /please rename/);
 	assert.match(text, /const x = 1/);
-	assert.match(formatCommentsForAgent([]), /without leaving comments/);
+	// ADR-0002: no user comments → short "no further action" result.
+	assert.match(formatCommentsForAgent([]), /no further action/);
+	// Agent comments are never echoed back as work items.
+	assert.match(
+		formatCommentsForAgent([{ id: "a", author: "agent", sha: null, file: "f", side: "new", line: 1, body: "note" }]),
+		/no further action/,
+	);
 });

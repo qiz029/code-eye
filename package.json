@@ -1,6 +1,6 @@
 {
 	"name": "@toddzheng024/code-eye",
-	"version": "0.2.0",
+	"version": "0.3.0",
 	"description": "GitHub-style code review panel for the pi coding agent: per-commit diffs and agent-guided walkthroughs in the TUI",
 	"keywords": [
 		"pi-package"
@@ -35,6 +35,6 @@
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit",
-		"test": "npx tsx --test comments.test.ts locate.test.ts"
+		"test": "npx tsx --test comments.test.ts locate.test.ts walkthrough.test.ts"
 	}
 }

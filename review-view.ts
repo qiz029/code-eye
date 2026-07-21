@@ -17,13 +17,14 @@ import {
 	findCommentLineIndex,
 	removeCommentAt,
 	upsertComment,
+	userComments,
 	type ReviewComment,
 	type ReviewResult,
 } from "./comments";
 import type { CommitEntry } from "./git";
-import { findItemIndex, findLineIndex } from "./locate";
+import { findItemIndex, findLineIndex, normalizePath } from "./locate";
 import { isCommentable, parseUnifiedDiff, type DiffLine } from "./parse-unidiff";
-import type { WalkthroughStop } from "./walkthrough";
+import { stopsToReviewComments, type WalkthroughStop } from "./walkthrough";
 
 type Focus = "commits" | "diff" | "comment";
 
@@ -35,11 +36,11 @@ export interface ReviewViewOptions {
 	tui: TUI;
 	done: (result: ReviewResult) => void;
 	termRows: number;
-	/** Agent-provided walkthrough stops; enables the banner and n/p navigation. */
+	/** Agent-provided walkthrough stops; anchored stops become read-only agent comments. */
 	stops?: WalkthroughStop[];
 	/** Called when the user presses w: ask the agent for a walkthrough. */
 	onRequestWalkthrough?: () => void;
-	/** Seed comments (session store); mutated list is returned via done(). */
+	/** Seed comments (session store, user comments only); mutated list is returned via done(). */
 	initialComments?: ReviewComment[];
 }
 
@@ -53,7 +54,12 @@ function fitToWidth(line: string, width: number): string {
 
 /**
  * Two-pane code review overlay: commit list on the left, rendered diff on
- * the right. Supports walkthrough stops and inline user comments.
+ * the right.
+ *
+ * ADR-0001: walkthrough stops are rendered as read-only agent comments
+ * (◆) alongside editable user comments (●); per-stop navigation (n/p)
+ * jumps between agent comments. File-less overview text stays as banner
+ * chrome.
  *
  * Drawn as a rounded box (╭─╮ / │ │ / ╰─╯) so the floating overlay has a
  * visible frame against the chat behind it.
@@ -67,21 +73,27 @@ export class ReviewView implements Component, Focusable {
 	private cursor = 0;
 	private diffLines: DiffLine[];
 	private loadToken = 0;
-	private stopIndex = 0;
-	private readonly stops: WalkthroughStop[];
+	private noteIndex = 0;
+	/** Read-only agent walkthrough notes (ADR-0001). */
+	private readonly agentNotes: ReviewComment[];
+	/** File-less overview text shown as banner chrome. */
+	private readonly summaries: WalkthroughStop[];
+	/** User comments (the only editable/persisted kind). */
 	private comments: ReviewComment[];
 	private readonly input = new Input();
 	/** Status toast shown briefly in the footer (e.g. "comment saved"). */
 	private status: string | null = null;
 
 	constructor(private readonly opts: ReviewViewOptions) {
-		this.stops = opts.stops ?? [];
-		this.comments = (opts.initialComments ?? []).slice();
+		const split = stopsToReviewComments(opts.stops ?? [], opts.items);
+		this.agentNotes = split.comments;
+		this.summaries = split.summaries;
+		this.comments = userComments(opts.initialComments ?? []);
 		this.diffLines = parseUnifiedDiff(opts.initialDiff);
 		this.input.onSubmit = (value) => this.commitCommentInput(value);
 		this.input.onEscape = () => this.cancelCommentInput();
-		if (this.stops.length > 0) {
-			void this.gotoStop(0);
+		if (this.agentNotes.length > 0) {
+			void this.gotoNote(0);
 		}
 	}
 
@@ -107,9 +119,8 @@ export class ReviewView implements Component, Focusable {
 		this.status = msg;
 	}
 
-	private renderDiffLine(line: DiffLine, hasComment: boolean): string {
+	private renderDiffLine(line: DiffLine, mark: string): string {
 		const t = this.theme;
-		const mark = hasComment ? t.fg("warning", "●") : " ";
 		switch (line.kind) {
 			case "file":
 				return t.fg("accent", t.bold(line.text));
@@ -142,12 +153,19 @@ export class ReviewView implements Component, Focusable {
 		this.opts.tui.requestRender();
 	}
 
-	// ---- walkthrough ----
+	// ---- agent notes (walkthrough) ----
 
-	private async gotoStop(i: number): Promise<void> {
-		if (this.stops.length === 0) return;
-		this.stopIndex = ((i % this.stops.length) + this.stops.length) % this.stops.length;
-		const stop = this.stops[this.stopIndex]!;
+	private async gotoNote(i: number): Promise<void> {
+		if (this.agentNotes.length === 0) return;
+		this.noteIndex = ((i % this.agentNotes.length) + this.agentNotes.length) % this.agentNotes.length;
+		const note = this.agentNotes[this.noteIndex]!;
+		const stop: WalkthroughStop = {
+			sha: note.sha,
+			file: note.file,
+			line: note.line,
+			title: note.title ?? "",
+			detail: note.body,
+		};
 		const target = findItemIndex(this.opts.items, stop, this.selected);
 		if (target !== this.selected) {
 			await this.select(target);
@@ -166,7 +184,7 @@ export class ReviewView implements Component, Focusable {
 			this.opts.tui.requestRender();
 			return;
 		}
-		const existing = findCommentAt(this.comments, anchor);
+		const existing = findCommentAt(this.comments, anchor, "user");
 		this.input.setValue(existing?.body ?? "");
 		this.input.focused = true;
 		this.focus = "comment";
@@ -211,18 +229,19 @@ export class ReviewView implements Component, Focusable {
 			this.opts.tui.requestRender();
 			return;
 		}
-		const existing = findCommentAt(this.comments, anchor);
+		const existing = findCommentAt(this.comments, anchor, "user");
 		if (!existing) {
-			this.setStatus("no comment on this line");
+			const agentNote = findCommentAt(this.agentNotes, anchor, "agent");
+			this.setStatus(agentNote ? "agent notes are read-only" : "no comment on this line");
 			this.opts.tui.requestRender();
 			return;
 		}
-		this.comments = removeCommentAt(this.comments, anchor);
+		this.comments = removeCommentAt(this.comments, anchor, "user");
 		this.setStatus("comment removed");
 		this.opts.tui.requestRender();
 	}
 
-	/** Jump to next/prev comment, wrapping; switches commit when needed. */
+	/** Jump to next/prev user comment, wrapping; switches commit when needed. */
 	private async jumpComment(dir: 1 | -1): Promise<void> {
 		if (this.comments.length === 0) {
 			this.setStatus("no comments yet");
@@ -276,7 +295,8 @@ export class ReviewView implements Component, Focusable {
 	}
 
 	private close(): void {
-		this.opts.done({ comments: this.comments.slice() });
+		// Return everything; callers filter to user comments (ADR-0002).
+		this.opts.done({ comments: [...this.comments, ...this.agentNotes] });
 	}
 
 	// ---- layout ----
@@ -289,6 +309,35 @@ export class ReviewView implements Component, Focusable {
 
 	private outerHeight(): number {
 		return Math.max(12, Math.floor(this.opts.termRows * 0.85));
+	}
+
+	/** Banner chrome: overview summaries plus the current agent note. */
+	private bannerRows(innerW: number): string[] {
+		const t = this.theme;
+		const rows: string[] = [];
+		for (const summary of this.summaries.slice(0, 1)) {
+			const detail = wrapTextWithAnsi(summary.detail, innerW - 2).slice(0, 1);
+			rows.push(
+				fitToWidth(
+					" " + t.fg("dim", t.bold(summary.title)) + t.fg("dim", detail[0] ? ` — ${detail[0]}` : ""),
+					innerW,
+				),
+			);
+		}
+		if (this.agentNotes.length > 0) {
+			const note = this.agentNotes[this.noteIndex]!;
+			const tag = `[${this.noteIndex + 1}/${this.agentNotes.length}]`;
+			const kind = note.kind ? t.fg("warning", ` · ${note.kind}`) : "";
+			const loc = t.fg("dim", ` · ${note.file}:${note.line}`);
+			rows.push(
+				fitToWidth(t.fg("accent", t.bold(` ${tag} `)) + t.bold(note.title ?? note.body) + kind + loc, innerW),
+			);
+			const detailLines = wrapTextWithAnsi(note.body, innerW - 2).slice(0, 2);
+			for (const dl of detailLines) {
+				rows.push(fitToWidth("  " + t.fg("muted", dl), innerW));
+			}
+		}
+		return rows.slice(0, 4);
 	}
 
 	handleInput(data: string): void {
@@ -330,13 +379,13 @@ export class ReviewView implements Component, Focusable {
 			return;
 		}
 
-		if (this.stops.length > 0) {
+		if (this.agentNotes.length > 0) {
 			if (matchesKey(data, "n")) {
-				void this.gotoStop(this.stopIndex + 1);
+				void this.gotoNote(this.noteIndex + 1);
 				return;
 			}
 			if (matchesKey(data, "p")) {
-				void this.gotoStop(this.stopIndex - 1);
+				void this.gotoNote(this.noteIndex - 1);
 				return;
 			}
 		} else if (matchesKey(data, "w") && this.opts.onRequestWalkthrough) {
@@ -353,7 +402,7 @@ export class ReviewView implements Component, Focusable {
 		}
 
 		const outerH = this.outerHeight();
-		const bannerRows = this.stops.length > 0 ? 3 : 0;
+		const bannerRows = this.summaries.length > 0 || this.agentNotes.length > 0 ? 3 : 0;
 		// composer rows only apply while focus==='comment', which returns earlier
 		const page = this.bodyHeight(outerH, bannerRows, 0);
 
@@ -403,33 +452,25 @@ export class ReviewView implements Component, Focusable {
 		this.input.focused = this.focused && this.focus === "comment";
 
 		// Banner content
-		const bannerInner: string[] = [];
-		if (this.stops.length > 0) {
-			const stop = this.stops[this.stopIndex]!;
-			const tag = `[${this.stopIndex + 1}/${this.stops.length}]`;
-			const kind = stop.kind ? t.fg("warning", ` · ${stop.kind}`) : "";
-			const loc = stop.file
-				? t.fg("dim", ` · ${stop.file}${stop.line != null ? `:${stop.line}` : ""}`)
-				: "";
-			bannerInner.push(
-				fitToWidth(t.fg("accent", t.bold(` ${tag} `)) + t.bold(stop.title) + kind + loc, innerW),
-			);
-			const detailLines = wrapTextWithAnsi(stop.detail, innerW - 2).slice(0, 2);
-			for (const dl of detailLines) {
-				bannerInner.push(fitToWidth("  " + t.fg("muted", dl), innerW));
-			}
-			while (bannerInner.length < 3) bannerInner.push(" ".repeat(innerW));
-		}
+		const bannerInner = this.bannerRows(innerW);
 
-		// Peek: show comment body under cursor (when not composing)
+		// Peek: show comment(s) under cursor (when not composing)
 		const cursorAnchor = this.diffLines[this.cursor]
 			? anchorFromDiffLine(this.diffLines[this.cursor]!, this.currentSha())
 			: null;
-		const cursorComment = cursorAnchor ? findCommentAt(this.comments, cursorAnchor) : undefined;
+		const cursorComment = cursorAnchor ? findCommentAt(this.comments, cursorAnchor, "user") : undefined;
+		const cursorNote = cursorAnchor ? findCommentAt(this.agentNotes, cursorAnchor, "agent") : undefined;
 		const peekRows: string[] = [];
-		if (cursorComment && this.focus !== "comment") {
-			const peeks = wrapTextWithAnsi(`💬 ${cursorComment.body}`, innerW - 2).slice(0, 2);
-			for (const p of peeks) peekRows.push(fitToWidth(" " + t.fg("warning", p), innerW));
+		if (this.focus !== "comment") {
+			if (cursorNote) {
+				const head = cursorNote.title ? `${cursorNote.title} — ` : "";
+				const peeks = wrapTextWithAnsi(`🤖 ${head}${cursorNote.body}`, innerW - 2).slice(0, 2);
+				for (const p of peeks) peekRows.push(fitToWidth(" " + t.fg("accent", p), innerW));
+			}
+			if (cursorComment) {
+				const peeks = wrapTextWithAnsi(`💬 ${cursorComment.body}`, innerW - 2).slice(0, 2);
+				for (const p of peeks) peekRows.push(fitToWidth(" " + t.fg("warning", p), innerW));
+			}
 		}
 
 		const composing = this.focus === "comment";
@@ -442,10 +483,12 @@ export class ReviewView implements Component, Focusable {
 
 		// top border with title
 		const nComments = this.comments.length;
+		const nNotes = this.agentNotes.length;
 		const titleText =
-			nComments > 0
-				? ` Code Review · ${items.length} item(s) · ${nComments} comment${nComments === 1 ? "" : "s"} `
-				: ` Code Review · ${items.length} item(s) `;
+			` Code Review · ${items.length} item(s)` +
+			(nComments > 0 ? ` · ${nComments} comment${nComments === 1 ? "" : "s"}` : "") +
+			(nNotes > 0 ? ` · ${nNotes} note${nNotes === 1 ? "" : "s"}` : "") +
+			" ";
 		const titleStyled = t.fg("accent", t.bold(titleText));
 		const titleW = visibleWidth(titleText);
 		const leftPad = Math.max(0, Math.floor((innerW - titleW) / 2));
@@ -498,9 +541,15 @@ export class ReviewView implements Component, Focusable {
 			leftLines.push(fitToWidth(styled, leftWidth));
 		}
 
-		const shaComments = commentsForSha(this.comments, this.currentSha());
-		const commentedKeys = new Set(
-			shaComments.map((c) => `${c.file}\0${c.side}\0${c.line}`),
+		// Marker lookup: user comments ●, agent notes ◆ (paths normalized so
+		// agent-provided paths with ./ or a/ prefixes still match).
+		const shaUserComments = commentsForSha(this.comments, this.currentSha());
+		const userKeys = new Set(
+			shaUserComments.map((c) => `${normalizePath(c.file)}\0${c.side}\0${c.line}`),
+		);
+		const shaNotes = commentsForSha(this.agentNotes, this.currentSha());
+		const noteKeys = new Set(
+			shaNotes.map((c) => `${normalizePath(c.file)}\0${c.side}\0${c.line}`),
 		);
 
 		const rightStart = Math.min(
@@ -516,9 +565,13 @@ export class ReviewView implements Component, Focusable {
 			}
 			const dl = this.diffLines[i]!;
 			const anchor = anchorFromDiffLine(dl, this.currentSha());
-			const has =
-				!!anchor && commentedKeys.has(`${anchor.file}\0${anchor.side}\0${anchor.line}`);
-			let line = this.renderDiffLine(dl, has);
+			let mark = " ";
+			if (anchor) {
+				const key = `${normalizePath(anchor.file)}\0${anchor.side}\0${anchor.line}`;
+				if (userKeys.has(key)) mark = t.fg("warning", "●");
+				else if (noteKeys.has(key)) mark = t.fg("accent", "◆");
+			}
+			let line = this.renderDiffLine(dl, mark);
 			if (i === this.cursor && (this.focus === "diff" || this.focus === "comment")) {
 				line = t.bg("selectedBg", fitToWidth(truncateToWidth(line, rightWidth, ""), rightWidth));
 			} else {
@@ -532,7 +585,7 @@ export class ReviewView implements Component, Focusable {
 			lines.push(B("│") + leftLines[r]! + " " + paneSep + " " + rightLines[r]! + B("│"));
 		}
 
-		// comment peek under cursor
+		// comment/note peek under cursor
 		if (peekRows.length > 0) {
 			lines.push(B("├") + B("─".repeat(innerW)) + B("┤"));
 			for (const p of peekRows) lines.push(B("│") + p + B("│"));
@@ -560,7 +613,7 @@ export class ReviewView implements Component, Focusable {
 		} else if (composing) {
 			help = " type comment · enter save · esc cancel";
 		} else {
-			const walkHint = this.stops.length > 0 ? " · n/p stop" : " · w walkthrough";
+			const walkHint = this.agentNotes.length > 0 ? " · n/p note" : " · w walkthrough";
 			const cHint = " · c comment · d del · [/] jump";
 			help =
 				this.focus === "commits"
