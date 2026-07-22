@@ -7,7 +7,7 @@ import { ReviewView } from "./review-view";
 import { stopsToReviewComments, type WalkthroughStop } from "./walkthrough";
 import { openWebReview } from "./web-review";
 
-const WALKTHROUGH_PROMPT = `Please give me a guided walkthrough of the current changes. Inspect the uncommitted changes (git diff HEAD) and the commits in the base..HEAD range (git log, git show), then call the \`review\` tool with a summary and an ordered list of walkthrough stops: the key changes, design decisions, and risky spots I should pay attention to.
+const walkthroughPrompt = (surface: ReviewSurface) => `Please give me a guided walkthrough of the current changes. Inspect the uncommitted changes (git diff HEAD) and the commits in the base..HEAD range (git log, git show), then call the \`review\` tool with \`surface: "${surface}"\`, a summary and an ordered list of walkthrough stops: the key changes, design decisions, and risky spots I should pay attention to.
 
 For each stop provide:
 - sha: short commit sha from git log (omit or empty for uncommitted changes)
@@ -78,7 +78,7 @@ async function openReview(
 					initialComments: commentStore.list(),
 					onRequestWalkthrough: () => {
 						// Walkthrough request closes the panel via done path; send prompt after.
-						pi.sendUserMessage(WALKTHROUGH_PROMPT, { deliverAs: "followUp" });
+						pi.sendUserMessage(walkthroughPrompt("tui"), { deliverAs: "followUp" });
 					},
 				}),
 			{
@@ -123,18 +123,11 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("code-eye-web", {
-		description: "Open code review in the browser (local web surface, ADR-0003)",
+		description: "Walk through the current changes, then open the review in the browser (local web surface, ADR-0003)",
 		handler: async (_args, ctx) => {
-			try {
-				const opened = await openReview(pi, ctx, { sendCommentsAsFollowUp: true, surface: "web" });
-				if (!opened) {
-					notify(ctx, "Nothing to review: no uncommitted changes and no commits in base..HEAD", "info");
-				} else if (opened.comments.length > 0) {
-					notify(ctx, `Sent ${opened.comments.length} comment(s) to the agent`, "info");
-				}
-			} catch (err) {
-				notify(ctx, `code-eye-web: ${err instanceof Error ? err.message : String(err)}`, "error");
-			}
+			// Web surface defaults to walkthrough-first: the agent generates stops,
+			// then opens the browser review with them already attached.
+			pi.sendUserMessage(walkthroughPrompt("web"), { deliverAs: "followUp" });
 		},
 	});
 
@@ -142,7 +135,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Ask the agent to walk you through the current changes in the review panel",
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) return;
-			pi.sendUserMessage(WALKTHROUGH_PROMPT, { deliverAs: "followUp" });
+			pi.sendUserMessage(walkthroughPrompt("tui"), { deliverAs: "followUp" });
 		},
 	});
 

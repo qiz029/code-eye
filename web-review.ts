@@ -228,7 +228,8 @@ export function openWebReview(opts: WebReviewOptions): Promise<{ comments: Revie
 			listening = true;
 			const addr = server.address() as AddressInfo;
 			const url = `http://127.0.0.1:${addr.port}/`;
-			console.log(`code-eye web review: ${url}`);
+			// stderr, not stdout: under MCP stdio (ADR-0004) stdout is the protocol channel.
+			console.error(`code-eye web review: ${url}`);
 			openBrowser(url);
 		});
 	});
@@ -248,90 +249,133 @@ const PAGE = `<!doctype html>
 <style>
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
-body { background: #0d1117; color: #c9d1d9; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; --topbar-h: 50px; }
-.mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
-.topbar { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 16px; padding: 10px 16px; background: #161b22; border-bottom: 1px solid #30363d; }
-.brand { display: flex; gap: 8px; align-items: baseline; font-weight: 600; color: #f0f6fc; }
-.brand .sep { color: #8b949e; font-weight: 400; }
-.stats { display: flex; gap: 12px; color: #8b949e; font-size: 13px; }
+:root {
+	--bg: #0d1117; --bg1: #161b22; --bg2: #21262d;
+	--border: #30363d; --border-soft: #21262d;
+	--fg: #c9d1d9; --dim: #8b949e; --faint: #6e7681; --bright: #f0f6fc;
+	--blue: #58a6ff; --green: #3fb950; --red: #f85149; --amber: #d29922;
+	--mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+	--sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+	--gutters: 140px;
+}
+body { background: var(--bg); color: var(--fg); font: 14px/1.55 var(--sans); --topbar-h: 50px; -webkit-font-smoothing: antialiased; }
+.mono { font-family: var(--mono); }
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--bg2); border: 3px solid var(--bg); border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: #3d444d; }
+:where(button, textarea, .item, .fhead):focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+.fhead:focus-visible { outline-offset: -2px; }
+.topbar { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 16px; padding: 10px 16px; background: rgba(22,27,34,.92); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); }
+.brand { display: flex; gap: 8px; align-items: baseline; font-weight: 600; letter-spacing: .01em; color: var(--bright); }
+.brand .sep { color: var(--dim); font-weight: 400; }
+.stats { display: flex; gap: 12px; color: var(--dim); font-size: 13px; }
+.hint { color: var(--faint); font-size: 12px; }
 .actions { margin-left: auto; display: flex; gap: 8px; }
-.btn { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 5px 12px; font-size: 13px; cursor: pointer; }
+.btn { background: var(--bg2); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 5px 12px; font-size: 13px; cursor: pointer; }
 .btn:hover { background: #30363d; }
 .btn.primary { background: #1f6feb; border-color: #1f6feb; color: #ffffff; }
 .btn.primary:hover { background: #388bfd; }
 .btn.small { padding: 2px 8px; font-size: 12px; }
-.btn.danger { color: #f85149; }
+.btn.danger { color: var(--red); }
 .btn:disabled { opacity: .5; cursor: default; }
 .layout { display: flex; align-items: flex-start; }
-aside { width: 280px; flex: none; position: sticky; top: var(--topbar-h); max-height: calc(100vh - var(--topbar-h)); overflow-y: auto; border-right: 1px solid #30363d; padding: 8px; }
-main { flex: 1; min-width: 0; padding: 16px; }
+aside { width: 280px; flex: none; position: sticky; top: var(--topbar-h); max-height: calc(100vh - var(--topbar-h)); overflow-y: auto; border-right: 1px solid var(--border); padding: 12px 8px; }
+main { flex: 1; min-width: 0; padding: 20px 24px; }
 .item { padding: 8px 10px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; margin-bottom: 4px; }
-.item:hover { background: #161b22; }
-.item.active { background: #161b22; border-color: #30363d; }
+.item:hover { background: var(--bg1); }
+.item.active { background: var(--bg1); border-color: var(--border); box-shadow: inset 2px 0 0 var(--blue); }
 .item-top { display: flex; align-items: center; gap: 8px; }
-.sha { font-size: 12px; color: #58a6ff; }
-.sha.amber { color: #d29922; }
-.badge-count { margin-left: auto; background: #30363d; color: #c9d1d9; border-radius: 10px; padding: 0 8px; font-size: 12px; line-height: 18px; }
+.sha { font-size: 12px; color: var(--blue); }
+.sha.amber { color: var(--amber); }
+.badge-count { margin-left: auto; background: var(--bg2); color: var(--fg); border-radius: 10px; padding: 0 8px; font-size: 12px; line-height: 18px; }
 .subject { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
-.item.uncommitted .subject { color: #d29922; }
-.summaries { margin-bottom: 16px; display: flex; flex-direction: column; gap: 8px; }
-.summary { background: #161b22; border: 1px solid #30363d; border-left: 3px solid #58a6ff; border-radius: 6px; padding: 10px 12px; }
-.summary-title { font-weight: 600; color: #f0f6fc; margin-bottom: 4px; }
-.summary-detail { color: #8b949e; white-space: pre-wrap; }
-.file { border: 1px solid #30363d; border-radius: 6px; margin-bottom: 16px; background: #0d1117; }
-.fhead { position: sticky; top: var(--topbar-h); z-index: 10; display: flex; align-items: center; gap: 8px; background: #161b22; padding: 10px 12px; border-bottom: 1px solid #30363d; border-radius: 6px 6px 0 0; }
+.item.uncommitted .subject { color: var(--amber); }
+.summaries { margin-bottom: 20px; display: flex; flex-direction: column; gap: 10px; }
+.summary { background: linear-gradient(180deg, rgba(88,166,255,.06), rgba(88,166,255,.02)), var(--bg1); border: 1px solid var(--border); border-left: 3px solid var(--blue); border-radius: 8px; padding: 12px 14px; }
+.summary-title { font-weight: 600; color: var(--bright); margin-bottom: 4px; }
+.summary-detail { color: var(--dim); white-space: pre-wrap; }
+.file { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 20px; background: var(--bg); box-shadow: 0 1px 2px rgba(1,4,9,.6); }
+.fhead { position: sticky; top: var(--topbar-h); z-index: 10; display: flex; align-items: center; gap: 8px; background: var(--bg1); padding: 9px 12px; border-bottom: 1px solid var(--border); border-radius: 8px 8px 0 0; cursor: pointer; user-select: none; }
+.fhead:hover { background: #1c2129; }
+.fchev { color: var(--dim); font-size: 11px; width: 14px; text-align: center; flex: none; }
+.file.collapsed .fbody { display: none; }
+.file.collapsed .fhead { border-bottom-color: transparent; border-radius: 8px; }
+.file.collapsed .fchev { transform: rotate(-90deg); }
 .ficon { font-size: 13px; }
-.fpath { color: #f0f6fc; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fpath { color: var(--bright); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fstats { margin-left: auto; display: flex; gap: 8px; font-size: 12px; flex: none; }
-.fadd { color: #3fb950; }
-.fdel { color: #f85149; }
+.fadd { color: var(--green); }
+.fdel { color: var(--red); }
 .fchip { font-size: 11px; border-radius: 10px; padding: 1px 8px; border: 1px solid; flex: none; }
-.fchip.added { color: #3fb950; border-color: rgba(63,185,80,.4); background: rgba(63,185,80,.1); }
-.fchip.deleted { color: #f85149; border-color: rgba(248,81,73,.4); background: rgba(248,81,73,.1); }
-.fchip.renamed { color: #58a6ff; border-color: rgba(56,139,253,.4); background: rgba(56,139,253,.1); }
-.fbody { overflow-x: auto; border-radius: 0 0 6px 6px; }
+.fchip.added { color: var(--green); border-color: rgba(63,185,80,.4); background: rgba(63,185,80,.1); }
+.fchip.deleted { color: var(--red); border-color: rgba(248,81,73,.4); background: rgba(248,81,73,.1); }
+.fchip.renamed { color: var(--blue); border-color: rgba(56,139,253,.4); background: rgba(56,139,253,.1); }
+.fbody { overflow-x: auto; border-radius: 0 0 8px 8px; padding: 4px 0; }
 .drow { display: grid; grid-template-columns: 24px 48px 48px 20px 1fr; width: max-content; min-width: 100%; }
 .gutter { position: relative; }
 .gbtn { display: none; position: absolute; left: 2px; top: 50%; transform: translateY(-50%); width: 20px; height: 20px; line-height: 1; padding: 0; background: #1f6feb; color: #ffffff; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; }
-.drow:hover .gbtn { display: block; }
-.ln { text-align: right; padding: 0 8px; color: #6e7681; font-size: 12px; line-height: 20px; user-select: none; }
-.sign { text-align: center; color: #8b949e; line-height: 20px; user-select: none; }
-.code { white-space: pre; padding-right: 16px; font-size: 12.5px; line-height: 20px; }
+.drow:hover .gbtn, .gbtn:focus-visible { display: block; }
+.ln { text-align: right; padding: 0 8px; color: var(--faint); font-size: 12px; line-height: 20px; user-select: none; }
+.drow:hover .ln { color: var(--dim); }
+.sign { text-align: center; color: var(--dim); line-height: 20px; user-select: none; }
+.code { white-space: pre; padding-right: 16px; font-size: 12.5px; line-height: 20px; tab-size: 4; }
+.drow.context:hover { background: rgba(139,148,158,.06); }
 .drow.add { background: rgba(63,185,80,.12); }
-.drow.add .sign { color: #3fb950; }
+.drow.add .sign { color: var(--green); }
 .drow.del { background: rgba(248,81,73,.12); }
-.drow.del .sign { color: #f85149; }
-.hunk { color: #58a6ff; background: rgba(56,139,253,.1); padding: 4px 12px; font-size: 12px; width: max-content; min-width: 100%; }
-.expander { display: flex; align-items: center; gap: 10px; padding: 4px 12px; background: #161b22; border-top: 1px solid #21262d; border-bottom: 1px solid #21262d; width: max-content; min-width: 100%; }
-.exp-btn { background: none; border: none; color: #58a6ff; cursor: pointer; font-size: 12px; padding: 2px 6px; border-radius: 4px; }
+.drow.del .sign { color: var(--red); }
+.hunk { color: var(--blue); background: rgba(56,139,253,.1); padding: 4px 12px; font-size: 12px; width: max-content; min-width: 100%; border-top: 1px solid var(--border-soft); }
+.expander { display: flex; align-items: center; gap: 10px; padding: 4px 12px; background: var(--bg1); border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft); width: max-content; min-width: 100%; }
+.exp-btn { background: none; border: none; color: var(--blue); cursor: pointer; font-size: 12px; padding: 2px 6px; border-radius: 4px; }
 .exp-btn:hover { background: rgba(56,139,253,.12); }
-.exp-label { color: #6e7681; font-size: 12px; }
-.crow { padding: 8px 12px 8px 92px; display: flex; flex-direction: column; gap: 8px; width: max-content; min-width: 100%; }
-.card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px 12px; max-width: 760px; }
+.exp-label { color: var(--faint); font-size: 12px; }
+.crow { padding: 8px 12px 8px var(--gutters); display: flex; flex-direction: column; gap: 8px; width: max-content; min-width: 100%; }
+.card { background: var(--bg1); border: 1px solid var(--border); border-left: 3px solid var(--blue); border-radius: 8px; padding: 10px 14px; max-width: 760px; box-shadow: 0 1px 2px rgba(1,4,9,.5); }
+.card.agent { border-left-color: var(--amber); }
 .card-head { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
 .badge { font-size: 12px; border-radius: 10px; padding: 1px 8px; }
-.b-user { background: rgba(56,139,253,.15); color: #58a6ff; border: 1px solid rgba(56,139,253,.4); }
-.b-agent { background: rgba(210,153,34,.15); color: #d29922; border: 1px solid rgba(210,153,34,.4); }
-.chip { font-size: 11px; color: #8b949e; border: 1px solid #30363d; border-radius: 10px; padding: 1px 8px; }
-.card-title { font-weight: 600; color: #f0f6fc; margin-bottom: 4px; }
+.b-user { background: rgba(56,139,253,.15); color: var(--blue); border: 1px solid rgba(56,139,253,.4); }
+.b-agent { background: rgba(210,153,34,.15); color: var(--amber); border: 1px solid rgba(210,153,34,.4); }
+.chip { font-size: 11px; color: var(--dim); border: 1px solid var(--border); border-radius: 10px; padding: 1px 8px; letter-spacing: .02em; }
+.card-title { font-weight: 600; color: var(--bright); margin-bottom: 4px; }
 .card-body { white-space: pre-wrap; }
 .card-actions { display: flex; gap: 8px; margin-top: 8px; }
-.card.flash { border-color: #58a6ff; box-shadow: 0 0 0 2px rgba(88,166,255,.4); }
-.editor-row { padding: 8px 12px 8px 92px; width: max-content; min-width: 100%; }
-.editor-row textarea { width: 100%; max-width: 760px; min-width: min(760px, 60vw); min-height: 80px; background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 8px; font: inherit; resize: vertical; }
-.editor-row textarea:focus { outline: none; border-color: #58a6ff; box-shadow: 0 0 0 2px rgba(88,166,255,.3); }
+.card.flash { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(88,166,255,.35); }
+.editor-row { padding: 8px 12px 8px var(--gutters); width: max-content; min-width: 100%; }
+.editor-row textarea { width: 100%; max-width: 760px; min-width: min(760px, 60vw); min-height: 80px; background: #010409; color: var(--fg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font: inherit; resize: vertical; }
+.editor-row textarea:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px rgba(88,166,255,.3); }
 .editor-actions { display: flex; gap: 8px; justify-content: flex-end; max-width: 760px; margin-top: 8px; }
-.placeholder { color: #8b949e; padding: 48px; text-align: center; }
+.placeholder { color: var(--dim); padding: 48px; text-align: center; }
 .done { height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; }
-.done-title { font-size: 20px; font-weight: 600; color: #f0f6fc; }
-.done-sub { color: #8b949e; }
+.done-title { font-size: 20px; font-weight: 600; color: var(--bright); }
+.done-sub { color: var(--dim); }
+.tok-c { color: #8b949e; }
+.tok-s { color: #a5d6ff; }
+.tok-k { color: #ff7b72; }
+.tok-n { color: #79c0ff; }
+.tok-t { color: #ffa657; }
+.tok-f { color: #d2a8ff; }
+.tok-p { color: #79c0ff; }
+.tok-v { color: #ffa657; }
+.tok-e { color: #7ee787; }
+.tok-b { font-weight: 600; }
+.tok-h { color: #79c0ff; font-weight: 600; }
+.tok-l { color: #58a6ff; }
+@media (prefers-reduced-motion: no-preference) {
+	.btn, .item, .exp-btn, .card { transition: background-color .12s ease, border-color .12s ease, box-shadow .12s ease; }
+	.fhead { transition: background-color .12s ease; }
+	.fchev { transition: transform .15s ease; }
+	.card.flash { animation: flashfade 1.5s ease-out; }
+}
+@keyframes flashfade { 0% { box-shadow: 0 0 0 5px rgba(88,166,255,.55); } 100% { box-shadow: 0 0 0 3px rgba(88,166,255,.35); } }
 </style>
 </head>
 <body>
 <header class="topbar">
 	<div class="brand"><span id="repo" class="mono"></span><span class="sep">/</span><span>Code Review</span></div>
-	<div class="stats"><span id="icount"></span><span id="ucount"></span></div>
-	<div class="actions"><button id="closebtn" class="btn">Close</button><button id="submit" class="btn primary">Submit review</button></div>
+	<div class="stats"><span id="icount"></span><span id="ucount"></span><span class="hint">n/p agent &middot; [/] mine</span></div>
+	<div class="actions"><button id="collapseall" class="btn">Collapse all</button><button id="closebtn" class="btn">Close</button><button id="submit" class="btn primary">Submit review</button></div>
 </header>
 <div class="layout">
 	<aside>
@@ -350,11 +394,300 @@ var openEditorEl = null;
 var navPtr = { agent: -1, user: -1 };
 // Expansion state survives refresh(): per item|file|gap index -> revealed line counts.
 var gapState = {};
+// Collapse state per item|file -> true when the file body is folded away.
+var collapsedState = {};
 // New-side file content per item|file -> array of lines (null = unavailable).
 var fileCache = {};
 var filePending = {};
 
 var HUNK_RE = /^@@ -(\\d+)(?:,(\\d+))? \\+(\\d+)(?:,(\\d+))? @@/;
+
+// ---------- lightweight syntax highlighting (no dependencies) ----------
+var EXT_LANG = {
+	js: "js", mjs: "js", cjs: "js", jsx: "js",
+	ts: "js", mts: "js", cts: "js", tsx: "js",
+	rs: "rust", go: "go", py: "python",
+	json: "json", css: "css",
+	html: "markup", htm: "markup", xml: "markup", svg: "markup", vue: "markup",
+	sh: "shell", bash: "shell", zsh: "shell",
+	md: "md", markdown: "md",
+	yml: "yaml", yaml: "yaml",
+	toml: "yaml", ini: "yaml"
+};
+
+function langForPath(p) {
+	var m = (p || "").match(/\.([A-Za-z0-9]+)$/);
+	if (!m) return null;
+	return EXT_LANG[m[1].toLowerCase()] || null;
+}
+
+function wordSet(s) {
+	var o = {};
+	s.split(" ").forEach(function (w) { o[w] = true; });
+	return o;
+}
+
+var KW = {
+	js: wordSet("const let var function return if else for while do switch case default break continue new delete typeof instanceof in of class extends super this null undefined true false import from export async await try catch finally throw yield static get set void interface type enum implements public private protected readonly abstract declare namespace keyof infer as is"),
+	rust: wordSet("fn let mut pub struct enum impl trait for in while loop if else match return use mod crate self Self super where async await move ref static const type unsafe extern dyn as break continue true false"),
+	go: wordSet("func var const type struct interface map chan go defer return if else for range switch case default break continue package import select fallthrough goto nil true false iota"),
+	python: wordSet("def class return if elif else for while import from as pass break continue with lambda try except finally raise global nonlocal yield async await assert del in is not and or None True False"),
+	shell: wordSet("if then else elif fi for while do done case esac function in select until local export return exit source eval set unset shift readonly true false"),
+	yaml: wordSet("true false null yes no on off"),
+	json: wordSet("true false null")
+};
+
+// lc: line comment, bc: block comment pair, strs: quote chars,
+// ml: quote char allowed to run past EOL, keyColon: "ident:" is a property,
+// dollar: $vars, deco: @decorators, triple: python triple-quoted strings.
+var SPECS = {
+	js: { lc: "//", bc: ["/*", "*/"], strs: ["\\"", "'", "\x60"], ml: "\x60", kw: KW.js },
+	rust: { lc: "//", bc: ["/*", "*/"], strs: ["\\"", "'"], ml: "", kw: KW.rust },
+	go: { lc: "//", bc: ["/*", "*/"], strs: ["\\"", "'", "\x60"], ml: "\x60", kw: KW.go },
+	python: { lc: "#", bc: null, strs: ["\\"", "'"], ml: "", kw: KW.python, triple: true, deco: true },
+	shell: { lc: "#", bc: null, strs: ["\\"", "'"], ml: "", kw: KW.shell, dollar: true },
+	yaml: { lc: "#", bc: null, strs: ["\\"", "'"], ml: "", kw: KW.yaml, keyColon: true },
+	json: { lc: null, bc: null, strs: ["\\""], ml: "", kw: KW.json, keyColon: true }
+};
+
+function escHtml(s) {
+	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function makeEmitter() {
+	var out = "";
+	return {
+		emit: function (cls, txt) {
+			if (!txt) return;
+			out += cls ? '<span class="' + cls + '">' + escHtml(txt) + "</span>" : escHtml(txt);
+		},
+		html: function () { return out; },
+	};
+}
+
+var RE_IDENT = /^[A-Za-z_$][A-Za-z0-9_$]*/;
+var RE_NUM = /^(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|\\d[\\d_]*(?:\\.\\d+)?(?:[eE][+-]?\\d+)?)/;
+
+// Generic scanner for C-like / scripting languages. st = { block, str } and
+// carries unterminated block comments / multiline strings across lines.
+function scanCode(line, spec, st) {
+	var e = makeEmitter();
+	var i = 0;
+	var n = line.length;
+	while (i < n) {
+		if (st.block) {
+			var be = line.indexOf(st.block, i);
+			if (be === -1) { e.emit("tok-c", line.slice(i)); i = n; }
+			else { e.emit("tok-c", line.slice(i, be + st.block.length)); i = be + st.block.length; st.block = null; }
+			continue;
+		}
+		if (st.str) {
+			var j = i;
+			var end = -1;
+			while (j < n) {
+				if (line.charAt(j) === "\\\\") { j += 2; continue; }
+				if (line.substr(j, st.str.length) === st.str) { end = j; break; }
+				j++;
+			}
+			if (end === -1) { e.emit("tok-s", line.slice(i)); i = n; }
+			else { e.emit("tok-s", line.slice(i, end + st.str.length)); i = end + st.str.length; st.str = null; }
+			continue;
+		}
+		var ch = line.charAt(i);
+		if (spec.lc && line.substr(i, spec.lc.length) === spec.lc) {
+			e.emit("tok-c", line.slice(i));
+			break;
+		}
+		if (spec.bc && line.substr(i, 2) === spec.bc[0]) {
+			var ce = line.indexOf(spec.bc[1], i + 2);
+			if (ce === -1) { e.emit("tok-c", line.slice(i)); st.block = spec.bc[1]; i = n; }
+			else { e.emit("tok-c", line.slice(i, ce + 2)); i = ce + 2; }
+			continue;
+		}
+		if (spec.triple) {
+			var t3 = line.substr(i, 3);
+			if (t3 === '"""' || t3 === "'''") {
+				var te = line.indexOf(t3, i + 3);
+				if (te === -1) { e.emit("tok-s", line.slice(i)); st.str = t3; i = n; }
+				else { e.emit("tok-s", line.slice(i, te + 3)); i = te + 3; }
+				continue;
+			}
+		}
+		if (spec.strs.indexOf(ch) !== -1) {
+			var k = i + 1;
+			var closed = -1;
+			while (k < n) {
+				if (line.charAt(k) === "\\\\") { k += 2; continue; }
+				if (line.charAt(k) === ch) { closed = k; break; }
+				k++;
+			}
+			if (closed === -1) {
+				e.emit("tok-s", line.slice(i));
+				if (spec.ml && ch === spec.ml) st.str = ch;
+				i = n;
+			} else {
+				var p2 = closed + 1;
+				while (p2 < n && (line.charAt(p2) === " " || line.charAt(p2) === "\\t")) p2++;
+				if (spec.keyColon && line.charAt(p2) === ":") e.emit("tok-p", line.slice(i, closed + 1));
+				else e.emit("tok-s", line.slice(i, closed + 1));
+				i = closed + 1;
+			}
+			continue;
+		}
+		if (spec.dollar && ch === "$") {
+			var dm = line.slice(i).match(/^\\$(?:[A-Za-z_][A-Za-z0-9_]*|\\{[^}]*\\}|[0-9@#?$!*-])/);
+			if (dm) { e.emit("tok-v", dm[0]); i += dm[0].length; continue; }
+		}
+		if (spec.deco && ch === "@") {
+			var am = line.slice(i).match(/^@[A-Za-z_][A-Za-z0-9_.]*/);
+			if (am) { e.emit("tok-t", am[0]); i += am[0].length; continue; }
+		}
+		if (/[0-9]/.test(ch)) {
+			var nm = line.slice(i).match(RE_NUM);
+			e.emit("tok-n", nm[0]);
+			i += nm[0].length;
+			continue;
+		}
+		if (/[A-Za-z_]/.test(ch)) {
+			var w = line.slice(i).match(RE_IDENT)[0];
+			var p = i + w.length;
+			while (p < n && (line.charAt(p) === " " || line.charAt(p) === "\\t")) p++;
+			if (spec.kw[w]) e.emit("tok-k", w);
+			else if (spec.keyColon && line.charAt(p) === ":") e.emit("tok-p", w);
+			else if (line.charAt(p) === "(") e.emit("tok-f", w);
+			else if (/^[A-Z]/.test(w)) e.emit("tok-t", w);
+			else e.emit(null, w);
+			i += w.length;
+			continue;
+		}
+		e.emit(null, ch);
+		i++;
+	}
+	return e.html();
+}
+
+// HTML/XML: st = { block (<!-- -->), tag, str }.
+function scanMarkup(line, st) {
+	var e = makeEmitter();
+	var i = 0;
+	var n = line.length;
+	while (i < n) {
+		if (st.block) {
+			var ce = line.indexOf("-->", i);
+			if (ce === -1) { e.emit("tok-c", line.slice(i)); i = n; }
+			else { e.emit("tok-c", line.slice(i, ce + 3)); i = ce + 3; st.block = null; }
+			continue;
+		}
+		if (st.tag) {
+			if (st.str) {
+				var se = line.indexOf(st.str, i);
+				if (se === -1) { e.emit("tok-s", line.slice(i)); i = n; }
+				else { e.emit("tok-s", line.slice(i, se + 1)); i = se + 1; st.str = null; }
+				continue;
+			}
+			var ch2 = line.charAt(i);
+			if (ch2 === ">") { e.emit(null, ">"); st.tag = false; i++; continue; }
+			if (ch2 === "\\"" || ch2 === "'") { st.str = ch2; e.emit("tok-s", ch2); i++; continue; }
+			var am = line.slice(i).match(/^[A-Za-z_:][-A-Za-z0-9_:.]*/);
+			if (am) { e.emit("tok-p", am[0]); i += am[0].length; continue; }
+			e.emit(null, ch2);
+			i++;
+			continue;
+		}
+		if (line.substr(i, 4) === "<!--") {
+			var xe = line.indexOf("-->", i + 4);
+			if (xe === -1) { e.emit("tok-c", line.slice(i)); st.block = true; i = n; }
+			else { e.emit("tok-c", line.slice(i, xe + 3)); i = xe + 3; }
+			continue;
+		}
+		if (line.charAt(i) === "<") {
+			var tm = line.slice(i).match(/^<\\/?[A-Za-z][A-Za-z0-9-]*/);
+			if (tm) { e.emit("tok-e", tm[0]); i += tm[0].length; st.tag = true; continue; }
+			e.emit(null, "<");
+			i++;
+			continue;
+		}
+		var lt = line.indexOf("<", i);
+		if (lt === -1) { e.emit(null, line.slice(i)); i = n; }
+		else { e.emit(null, line.slice(i, lt)); i = lt; }
+	}
+	return e.html();
+}
+
+// CSS: st = { block }.
+function scanCss(line, st) {
+	var e = makeEmitter();
+	var i = 0;
+	var n = line.length;
+	while (i < n) {
+		if (st.block) {
+			var be = line.indexOf("*/", i);
+			if (be === -1) { e.emit("tok-c", line.slice(i)); i = n; }
+			else { e.emit("tok-c", line.slice(i, be + 2)); i = be + 2; st.block = null; }
+			continue;
+		}
+		var ch = line.charAt(i);
+		if (line.substr(i, 2) === "/*") {
+			var ce = line.indexOf("*/", i + 2);
+			if (ce === -1) { e.emit("tok-c", line.slice(i)); st.block = "*/"; i = n; }
+			else { e.emit("tok-c", line.slice(i, ce + 2)); i = ce + 2; }
+			continue;
+		}
+		if (ch === "\\"" || ch === "'") {
+			var se = line.indexOf(ch, i + 1);
+			if (se === -1) { e.emit("tok-s", line.slice(i)); i = n; }
+			else { e.emit("tok-s", line.slice(i, se + 1)); i = se + 1; }
+			continue;
+		}
+		if (ch === "@") {
+			var am = line.slice(i).match(/^@[A-Za-z-]+/);
+			if (am) { e.emit("tok-k", am[0]); i += am[0].length; continue; }
+		}
+		if (ch === "#") {
+			var hm = line.slice(i).match(/^#[0-9a-fA-F]{3,8}(?![0-9a-fA-F])/);
+			if (hm) { e.emit("tok-n", hm[0]); i += hm[0].length; continue; }
+		}
+		if (/[0-9]/.test(ch)) {
+			var nm = line.slice(i).match(/^[0-9][0-9.]*(?:[a-z%]+)?/);
+			e.emit("tok-n", nm[0]);
+			i += nm[0].length;
+			continue;
+		}
+		if (/[A-Za-z_-]/.test(ch)) {
+			var w = line.slice(i).match(/^-?[A-Za-z_][-A-Za-z0-9_]*/);
+			if (!w) { e.emit(null, ch); i++; continue; }
+			var p = i + w[0].length;
+			while (p < n && (line.charAt(p) === " " || line.charAt(p) === "\\t")) p++;
+			if (line.charAt(p) === ":" && line.charAt(p + 1) !== ":") e.emit("tok-p", w[0]);
+			else if (line.charAt(p) === "(") e.emit("tok-f", w[0]);
+			else e.emit(null, w[0]);
+			i += w[0].length;
+			continue;
+		}
+		e.emit(null, ch);
+		i++;
+	}
+	return e.html();
+}
+
+// Markdown: single-line, regex passes over the escaped text.
+function scanMd(line) {
+	if (/^\\s{0,3}#{1,6}\\s/.test(line)) return '<span class="tok-h">' + escHtml(line) + "</span>";
+	var out = escHtml(line);
+	out = out.replace(/\x60[^\x60]+\x60/g, '<span class="tok-s">$&</span>');
+	out = out.replace(/\\*\\*[^*]+\\*\\*/g, '<span class="tok-b">$&</span>');
+	out = out.replace(/\\[([^\\]]*)\\]\\(([^)]*)\\)/g, '<span class="tok-l">[$1]</span><span class="tok-c">($2)</span>');
+	out = out.replace(/^(\\s*(?:[-*+]|\\d+\\.)\\s)/, '<span class="tok-k">$1</span>');
+	return out;
+}
+
+function highlightLine(text, lang, st) {
+	if (!text) return "";
+	if (lang === "markup") return scanMarkup(text, st);
+	if (lang === "css") return scanCss(text, st);
+	if (lang === "md") return scanMd(text);
+	return scanCode(text, SPECS[lang], st);
+}
 
 function el(tag, cls, text) {
 	var e = document.createElement(tag);
@@ -485,6 +818,7 @@ function renderDiff(keepScroll) {
 	}
 	if (fl) { main.appendChild(buildFileSection(fl, it)); sections++; }
 	if (!sections) main.appendChild(el("div", "placeholder", "No changes in this item."));
+	updateCollapseAllBtn();
 	window.scrollTo(0, scroll);
 }
 
@@ -505,7 +839,7 @@ function parseHunk(l) {
 	};
 }
 
-function fileHeader(name, fl) {
+function fileHeader(name, fl, collapsed) {
 	var adds = 0;
 	var dels = 0;
 	var status = null;
@@ -519,6 +853,11 @@ function fileHeader(name, fl) {
 		}
 	});
 	var h = el("div", "fhead");
+	h.tabIndex = 0;
+	h.setAttribute("role", "button");
+	h.setAttribute("aria-expanded", collapsed ? "false" : "true");
+	h.title = "Toggle this file's diff";
+	h.appendChild(el("span", "fchev", "▾"));
 	h.appendChild(el("span", "ficon", "📄"));
 	h.appendChild(el("span", "fpath mono", name));
 	if (status) h.appendChild(el("span", "fchip " + status, status));
@@ -527,6 +866,46 @@ function fileHeader(name, fl) {
 	if (dels) stats.appendChild(el("span", "fdel", "−" + dels));
 	h.appendChild(stats);
 	return h;
+}
+
+// Toggle one file's collapse state. Only flips a class on the live DOM —
+// no re-render — so an open comment editor inside the file keeps its text.
+function toggleFile(sec, head, key) {
+	var collapsed = !collapsedState[key];
+	collapsedState[key] = collapsed;
+	sec.classList.toggle("collapsed", collapsed);
+	head.setAttribute("aria-expanded", collapsed ? "false" : "true");
+	updateCollapseAllBtn();
+}
+
+function currentFiles() {
+	var files = [];
+	lines.forEach(function (l) { if (l.kind === "file") files.push(l.file || l.text); });
+	return files;
+}
+
+function updateCollapseAllBtn() {
+	var btn = document.getElementById("collapseall");
+	if (!btn || !session) return;
+	var files = currentFiles();
+	var anyExpanded = files.some(function (f) { return !collapsedState[cur + "|" + f]; });
+	btn.textContent = anyExpanded ? "Collapse all" : "Expand all";
+	btn.disabled = files.length === 0;
+}
+
+function toggleAllFiles() {
+	var files = currentFiles();
+	if (!files.length) return;
+	var anyExpanded = files.some(function (f) { return !collapsedState[cur + "|" + f]; });
+	files.forEach(function (f) { collapsedState[cur + "|" + f] = anyExpanded; });
+	// Apply in place (no re-render) to preserve any open editor.
+	var secs = document.getElementById("main").querySelectorAll(".file");
+	for (var i = 0; i < secs.length && i < files.length; i++) {
+		secs[i].classList.toggle("collapsed", anyExpanded);
+		var head = secs[i].querySelector(".fhead");
+		if (head) head.setAttribute("aria-expanded", anyExpanded ? "false" : "true");
+	}
+	updateCollapseAllBtn();
 }
 
 function ensureFileContent(file) {
@@ -620,8 +999,22 @@ function renderGap(fbody, file, gapIdx, gap, it, renderRow) {
 
 function buildFileSection(fl, it) {
 	var name = fl[0].file || fl[0].text;
-	var sec = el("div", "file");
-	sec.appendChild(fileHeader(name, fl));
+	var lang = langForPath(name);
+	// Cross-line token state (block comments, multiline strings): rows are
+	// appended in file order, so a single state object replays consistently
+	// on every re-render.
+	var hlState = { block: null, str: null, tag: false };
+	var ckey = cur + "|" + name;
+	var sec = el("div", "file" + (collapsedState[ckey] ? " collapsed" : ""));
+	var head = fileHeader(name, fl, !!collapsedState[ckey]);
+	sec.appendChild(head);
+	head.addEventListener("click", function () { toggleFile(sec, head, ckey); });
+	head.addEventListener("keydown", function (ev) {
+		if (ev.key === "Enter" || ev.key === " ") {
+			ev.preventDefault();
+			toggleFile(sec, head, ckey);
+		}
+	});
 	var fbody = el("div", "fbody");
 	sec.appendChild(fbody);
 
@@ -637,7 +1030,7 @@ function buildFileSection(fl, it) {
 	});
 
 	function renderRow(l) {
-		fbody.appendChild(diffRow(l, it));
+		fbody.appendChild(diffRow(l, it, lang, hlState));
 		var cs = commentsOn(l, it.sha);
 		if (cs.length) {
 			var crow = el("div", "crow");
@@ -672,7 +1065,7 @@ function buildFileSection(fl, it) {
 	return sec;
 }
 
-function diffRow(l, it) {
+function diffRow(l, it, lang, hlState) {
 	var row = el("div", "drow " + l.kind);
 	row._line = l;
 	row._item = it;
@@ -685,7 +1078,10 @@ function diffRow(l, it) {
 	row.appendChild(el("div", "ln mono", l.oldLine == null ? "" : String(l.oldLine)));
 	row.appendChild(el("div", "ln mono", l.newLine == null ? "" : String(l.newLine)));
 	row.appendChild(el("div", "sign mono", l.kind === "add" ? "+" : (l.kind === "del" ? "-" : "")));
-	row.appendChild(el("div", "code mono", l.text));
+	var codeEl = el("div", "code mono");
+	if (lang && l.text) codeEl.innerHTML = highlightLine(l.text, lang, hlState);
+	else codeEl.textContent = l.text;
+	row.appendChild(codeEl);
 	return row;
 }
 
@@ -811,7 +1207,8 @@ function orderedEntries(list) {
 function scrollToCard(id) {
 	var node = document.getElementById(id);
 	if (!node) return;
-	node.scrollIntoView({ block: "center", behavior: "smooth" });
+	var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+	node.scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" });
 	node.classList.add("flash");
 	setTimeout(function () { node.classList.remove("flash"); }, 1500);
 }
@@ -860,6 +1257,7 @@ function closeReview(title) {
 document.getElementById("submit").addEventListener("click", function () {
 	closeReview("Review submitted");
 });
+document.getElementById("collapseall").addEventListener("click", toggleAllFiles);
 document.getElementById("closebtn").addEventListener("click", function () {
 	closeReview("Review closed");
 });

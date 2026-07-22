@@ -1,0 +1,14 @@
+{
+	"name": "code-eye",
+	"owner": {
+		"name": "qiz029"
+	},
+	"plugins": [
+		{
+			"name": "code-eye",
+			"source": "./plugins/claude-code",
+			"description": "GitHub-style code review in the browser: agent-guided walkthroughs and line-comment feedback",
+			"version": "0.4.0"
+		}
+	]
+}

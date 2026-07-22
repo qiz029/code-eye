@@ -1,0 +1,14 @@
+{
+	"name": "code-eye",
+	"version": "0.4.0",
+	"description": "GitHub-style code review in the browser: agent-guided walkthroughs and line-comment feedback that flows back to the agent",
+	"author": {
+		"name": "qiz029"
+	},
+	"homepage": "https://github.com/qiz029/code-eye",
+	"repository": "https://github.com/qiz029/code-eye",
+	"license": "Apache-2.0",
+	"keywords": ["code-review", "walkthrough", "diff-comments"],
+	"skills": "./skills/",
+	"mcpServers": "./.mcp.json"
+}

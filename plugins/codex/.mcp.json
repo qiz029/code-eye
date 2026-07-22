@@ -1,0 +1,8 @@
+{
+	"mcp_servers": {
+		"code-eye": {
+			"command": "npx",
+			"args": ["-y", "--package", "@toddzheng024/code-eye", "code-eye-mcp"]
+		}
+	}
+}
