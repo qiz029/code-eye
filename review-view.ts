@@ -16,10 +16,12 @@ import {
 	findCommentAt,
 	findCommentLineIndex,
 	removeCommentAt,
+	setCommentStatus,
 	upsertComment,
 	userComments,
 	type ReviewComment,
 	type ReviewResult,
+	type Severity,
 } from "./comments";
 import type { CommitEntry } from "./git";
 import { findItemIndex, findLineIndex, normalizePath } from "./locate";
@@ -155,6 +157,22 @@ export class ReviewView implements Component, Focusable {
 
 	// ---- agent notes (walkthrough) ----
 
+	private severityChip(sev: Severity): string {
+		const t = this.theme;
+		if (sev === "high") return t.fg("warning", " · ‼high");
+		if (sev === "medium") return t.fg("accent", " · medium");
+		return t.fg("dim", " · low");
+	}
+
+	/** Stale = note belongs to the current item but its anchor no longer
+	 * resolves against the current diff (code moved since the walkthrough). */
+	private noteIsStale(note: ReviewComment): boolean {
+		const cur = this.currentSha();
+		const onCurrent = (note.sha === null) === (cur === null) && (cur === null || note.sha === cur);
+		if (!onCurrent) return false;
+		return findCommentLineIndex(this.diffLines, note) < 0;
+	}
+
 	private async gotoNote(i: number): Promise<void> {
 		if (this.agentNotes.length === 0) return;
 		this.noteIndex = ((i % this.agentNotes.length) + this.agentNotes.length) % this.agentNotes.length;
@@ -238,6 +256,27 @@ export class ReviewView implements Component, Focusable {
 		}
 		this.comments = removeCommentAt(this.comments, anchor, "user");
 		this.setStatus("comment removed");
+		this.opts.tui.requestRender();
+	}
+
+	/** r: toggle open/resolved on the user comment under the cursor (ADR-0005).
+	 * Resolved comments persist but are not fed back to the agent. */
+	private toggleResolvedAtCursor(): void {
+		const anchor = this.currentAnchor();
+		if (!anchor) {
+			this.setStatus("cursor is not on a commentable line");
+			this.opts.tui.requestRender();
+			return;
+		}
+		const existing = findCommentAt(this.comments, anchor, "user");
+		if (!existing) {
+			this.setStatus("no comment on this line");
+			this.opts.tui.requestRender();
+			return;
+		}
+		const next = existing.status === "resolved" ? "open" : "resolved";
+		this.comments = setCommentStatus(this.comments, anchor, next);
+		this.setStatus(next === "resolved" ? "comment resolved" : "comment reopened");
 		this.opts.tui.requestRender();
 	}
 
@@ -328,9 +367,14 @@ export class ReviewView implements Component, Focusable {
 			const note = this.agentNotes[this.noteIndex]!;
 			const tag = `[${this.noteIndex + 1}/${this.agentNotes.length}]`;
 			const kind = note.kind ? t.fg("warning", ` · ${note.kind}`) : "";
+			const sev = note.severity ? this.severityChip(note.severity) : "";
+			const stale = this.noteIsStale(note) ? t.fg("dim", " · stale") : "";
 			const loc = t.fg("dim", ` · ${note.file}:${note.line}`);
 			rows.push(
-				fitToWidth(t.fg("accent", t.bold(` ${tag} `)) + t.bold(note.title ?? note.body) + kind + loc, innerW),
+				fitToWidth(
+					t.fg("accent", t.bold(` ${tag} `)) + t.bold(note.title ?? note.body) + kind + sev + stale + loc,
+					innerW,
+				),
 			);
 			const detailLines = wrapTextWithAnsi(note.body, innerW - 2).slice(0, 2);
 			for (const dl of detailLines) {
@@ -368,6 +412,13 @@ export class ReviewView implements Component, Focusable {
 				this.focus = "diff";
 			}
 			this.deleteCommentAtCursor();
+			return;
+		}
+		if (matchesKey(data, "r")) {
+			if (this.focus !== "diff") {
+				this.focus = "diff";
+			}
+			this.toggleResolvedAtCursor();
 			return;
 		}
 		if (matchesKey(data, "]")) {
@@ -468,7 +519,8 @@ export class ReviewView implements Component, Focusable {
 				for (const p of peeks) peekRows.push(fitToWidth(" " + t.fg("accent", p), innerW));
 			}
 			if (cursorComment) {
-				const peeks = wrapTextWithAnsi(`💬 ${cursorComment.body}`, innerW - 2).slice(0, 2);
+				const label = cursorComment.status === "resolved" ? `[resolved] ${cursorComment.body}` : cursorComment.body;
+				const peeks = wrapTextWithAnsi(`💬 ${label}`, innerW - 2).slice(0, 2);
 				for (const p of peeks) peekRows.push(fitToWidth(" " + t.fg("warning", p), innerW));
 			}
 		}
@@ -541,11 +593,11 @@ export class ReviewView implements Component, Focusable {
 			leftLines.push(fitToWidth(styled, leftWidth));
 		}
 
-		// Marker lookup: user comments ●, agent notes ◆ (paths normalized so
-		// agent-provided paths with ./ or a/ prefixes still match).
+		// Marker lookup: user comments ● (resolved ○), agent notes ◆ (paths
+		// normalized so agent-provided paths with ./ or a/ prefixes still match).
 		const shaUserComments = commentsForSha(this.comments, this.currentSha());
-		const userKeys = new Set(
-			shaUserComments.map((c) => `${normalizePath(c.file)}\0${c.side}\0${c.line}`),
+		const userStatus: Map<string, ReviewComment["status"]> = new Map(
+			shaUserComments.map((c) => [`${normalizePath(c.file)}\0${c.side}\0${c.line}`, c.status] as const),
 		);
 		const shaNotes = commentsForSha(this.agentNotes, this.currentSha());
 		const noteKeys = new Set(
@@ -568,7 +620,8 @@ export class ReviewView implements Component, Focusable {
 			let mark = " ";
 			if (anchor) {
 				const key = `${normalizePath(anchor.file)}\0${anchor.side}\0${anchor.line}`;
-				if (userKeys.has(key)) mark = t.fg("warning", "●");
+				const st = userStatus.get(key);
+				if (st !== undefined) mark = st === "resolved" ? t.fg("dim", "○") : t.fg("warning", "●");
 				else if (noteKeys.has(key)) mark = t.fg("accent", "◆");
 			}
 			let line = this.renderDiffLine(dl, mark);
@@ -614,7 +667,7 @@ export class ReviewView implements Component, Focusable {
 			help = " type comment · enter save · esc cancel";
 		} else {
 			const walkHint = this.agentNotes.length > 0 ? " · n/p note" : " · w walkthrough";
-			const cHint = " · c comment · d del · [/] jump";
+			const cHint = " · c comment · d del · r resolve · [/] jump";
 			help =
 				this.focus === "commits"
 					? ` ↑↓ commit · enter/tab diff${cHint}${walkHint} · esc`

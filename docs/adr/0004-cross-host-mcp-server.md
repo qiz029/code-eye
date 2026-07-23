@@ -10,6 +10,6 @@ Support Claude Code and Codex in addition to pi, without forking the codebase pe
   - Headless sessions (`CI` env) fail fast with a "summarize in chat" message instead of hanging.
 - Under MCP stdio, stdout is the protocol channel — `web-review.ts` logs its URL on stderr.
 - Distribution: the repo itself is a plugin marketplace for both hosts (`.claude-plugin/marketplace.json`, `.agents/plugins/marketplace.json`); plugins live in `plugins/` and launch the server via `npx` from the published npm package. The MCP entry is esbuild-bundled to a single `dist/code-eye-mcp.mjs` bin.
-- Comment persistence stays process-memory only: the MCP server process lives as long as the host session, which matches the pi extension's session-scoped store (ADR-0001). Disk persistence (`CLAUDE_PLUGIN_DATA` etc.) is deferred.
+- Comment persistence: superseded by ADR-0005 — user comments and the last-reviewed HEAD now persist to `<gitdir>/code-eye/state.json` (the process-memory store described here originally was the pre-ADR-0005 behavior).
 
 Rejected: tmux/kitty overlay hacks or forking the Codex TUI for a terminal surface (coverage/maintenance cost); MCP elicitation as the interaction channel (short-form Q&A, unfit for diff review).

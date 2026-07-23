@@ -11,8 +11,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { CommentStore, formatCommentsForAgent, userComments } from "./comments";
-import { listReviewItems, loadDiff, loadFileContent } from "./git";
+import { CommentStore, formatCommentsForAgent, pruneComments, userComments } from "./comments";
+import { getHeadSha, listReviewItems, loadDiff, loadFileContent } from "./git";
+import { loadReviewState, saveReviewState } from "./review-state";
 import { stopsToReviewComments, type WalkthroughStop } from "./walkthrough";
 import { openWebReview } from "./web-review";
 
@@ -35,6 +36,8 @@ server.registerTool(
 			"and uncommitted changes; walkthrough stops point the user at the most important or risky spots. " +
 			"The user can leave line comments on the diff. " +
 			"The tool blocks until the user closes the panel and returns any comments they left — address each one. " +
+			"Comments the user marked resolved are not returned. Replies to your walkthrough notes come back " +
+			"tagged as questions or suggestion-adoption requests. " +
 			"Closing without comments means the review is accepted; do not treat it as a request for more work.",
 		inputSchema: {
 			summary: z.string().optional().describe("One-paragraph overview of what changed and why"),
@@ -50,6 +53,16 @@ server.registerTool(
 						file: z.string().optional().describe("File path within that commit's diff"),
 						line: z.number().optional().describe("Line number in the new version of the file"),
 						kind: z.string().optional().describe("Category tag, e.g. change, risk, note"),
+						severity: z
+							.enum(["high", "medium", "low"])
+							.optional()
+							.describe("Risk level for risky stops; shown as a colored chip and drives the risk filter"),
+						suggestion: z
+							.string()
+							.optional()
+							.describe(
+								"Replacement code for the anchored line(s); shown read-only, the user can ask you to apply it",
+							),
 					}),
 				)
 				.optional(),
@@ -65,10 +78,18 @@ server.registerTool(
 			);
 		}
 
-		const items = await listReviewItems(cwd);
+		// ADR-0005: on-disk state feeds the delta item and seeds persisted comments.
+		const state = await loadReviewState(cwd);
+		const items = await listReviewItems(cwd, { since: state.lastReviewedHead });
 		if (items.length === 0) {
 			return textResult("Nothing to review: no uncommitted changes and no commits in base..HEAD.");
 		}
+
+		// ADR-0005: reseed from disk on every call — the store only lives to
+		// carry comments through one open/close cycle here.
+		commentStore.replace(pruneComments(state.comments, items));
+
+		const deltaSince = items.find((i) => i.since)?.since;
 
 		const all: WalkthroughStop[] = [];
 		if (summary) all.push({ title: "Overview", detail: summary, kind: "overview" });
@@ -97,12 +118,19 @@ server.registerTool(
 				agentComments: split.comments,
 				summaries: split.summaries,
 				initialComments: commentStore.list(),
-				loadDiffFor: (sha) => loadDiff(cwd, sha),
-				loadFileFor: (sha, file, side) => loadFileContent(cwd, sha, file, side),
+				loadDiffFor: (sha) => (sha === null && deltaSince ? loadDiff(cwd, null, deltaSince) : loadDiff(cwd, sha)),
+				loadFileFor: (sha, file, side) =>
+					loadFileContent(cwd, sha, file, side, sha === null ? deltaSince : undefined),
 			});
 			// ADR-0002: only user comments persist and are fed back to the agent.
 			const comments = userComments(result.comments);
 			commentStore.replace(comments);
+			// ADR-0005: persist across sessions; record HEAD for the next delta item.
+			await saveReviewState(cwd, {
+				version: 1,
+				comments: commentStore.list(),
+				lastReviewedHead: (await getHeadSha(cwd)) ?? undefined,
+			});
 			return textResult(formatCommentsForAgent(comments));
 		} finally {
 			if (heartbeat !== undefined) clearInterval(heartbeat);

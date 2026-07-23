@@ -9,7 +9,9 @@ Review your changes commit by commit — per-commit diffs with GitHub-style red/
 ## Features
 
 - **Per-commit review** — left pane lists your uncommitted changes plus every commit in `base..HEAD` (base defaults to `main`, falls back to `master` or the origin default branch); the right pane shows the selected commit's diff with GitHub-style red/green coloring and line numbers.
-- **Agent walkthrough** — the agent inspects your changes and leaves read-only notes (◆) anchored to commit/file/line, alongside your own comments (●). Jump between notes with `n`/`p`.
+- **Agent walkthrough** — the agent inspects your changes and leaves read-only notes (◆) anchored to commit/file/line, alongside your own comments (●). Jump between notes with `n`/`p`. Notes can carry a risk severity (high/medium/low, filterable on the web surface) and a read-only code suggestion you can ask the agent to apply.
+- **Review rounds (ADR-0005)** — your comments persist across sessions (in `<gitdir>/code-eye/state.json`); when you come back, a **Δ since last review** item shows everything that changed since you last closed the review. Mark comments resolved as the agent addresses them — resolved comments persist but are not sent back.
+- **Ask back inline** — on the web surface you can reply to an agent note with a question, or adopt its suggestion; both go back to the agent with your other comments. Stale notes (code moved since the walkthrough) are greyed out.
 - **Browser surface** — `/code-eye-web` asks the agent for a walkthrough first, then opens the review — notes already attached — in your browser via a throwaway `127.0.0.1` server: real scrolling, multi-line comment editing, GitHub-like chrome. It shuts down when you submit or close.
 - **Two-way trigger** — open the panel yourself with `/code-eye`, ask the agent for a guided tour with `/code-eye-walkthrough`, or let the agent call its `review` tool after making changes ("walk me through what you changed").
 - **Quiet closes** — only your comments reach the agent; closing the panel without commenting is a silent "LGTM" (agent notes are never fed back as work items).
@@ -91,6 +93,7 @@ Inside the panel:
 | `n` / `p` | Next / previous agent note (when a walkthrough is active) |
 | `c` / `Enter` | Add or edit a comment on the current diff line (add/del/context only) |
 | `d` | Delete your comment on the current line (agent notes are read-only) |
+| `r` | Mark your comment on the current line resolved / reopen it (resolved comments persist but aren't sent to the agent) |
 | `[` / `]` | Jump to previous / next comment |
 | `w` | Ask the agent for a walkthrough (when none is active) |
 | `Esc` | Close the panel (and submit any comments) |
@@ -111,8 +114,8 @@ The agent can also open the panel itself via the `review` tool, optionally passi
 ![Web review: per-commit view with file stats, status chips, and expandable gaps](docs/assets/web-review-commit.png)
 
 - Click items in the sidebar to switch between uncommitted changes and commits; `#i=N` in the URL deep-links to an item.
-- Hover a diff line and click the blue **+** to write a multi-line comment (`Cmd/Ctrl+Enter` saves, `Esc` cancels); your comments show up as editable "you" cards.
-- Agent walkthrough notes render as read-only 🤖 cards with kind chips; `n`/`p` jumps between them, `]`/`[` between your own comments.
+- Hover a diff line and click the blue **+** to write a multi-line comment (`Cmd/Ctrl+Enter` saves, `Esc` cancels); your comments show up as editable "you" cards with a resolve toggle.
+- Agent walkthrough notes render as read-only 🤖 cards with kind/severity chips; `n`/`p` jumps between them, `]`/`[` between your own comments. Filter notes by risk from the topbar, ask a question on a note, or adopt its suggestion — replies go back to the agent with your comments. Stale notes ("code changed") are greyed and skipped by navigation.
 - Hidden context between hunks expands in place via **↑ Expand up / ↓ Expand down**.
 
 ## Development
@@ -140,9 +143,10 @@ ln -s "$PWD" ~/.pi/agent/extensions/code-eye
 
 ## How it works
 
-- `git.ts` — detects the base branch, lists `base..HEAD` commits plus uncommitted changes, and loads per-commit patches via `git show` / `git diff`.
+- `git.ts` — detects the base branch, lists `base..HEAD` commits plus uncommitted changes (or the "Δ since last review" delta item), and loads per-commit patches via `git show` / `git diff`.
 - `parse-unidiff.ts` — parses unified diffs into structured lines (file, old/new line numbers) so walkthrough stops can anchor to exact lines.
-- `comments.ts` — the shared `ReviewComment` model: user comments (editable, persisted, sent to the agent) and agent walkthrough notes (read-only, regenerated per session) share one anchor format.
+- `comments.ts` — the shared `ReviewComment` model: user comments (editable, persisted, sent to the agent) and agent walkthrough notes (read-only, regenerated per session) share one anchor format; also resolved status, note replies, and anchor-staleness checks (ADR-0005).
+- `review-state.ts` — on-disk review state in `<gitdir>/code-eye/state.json`: persisted user comments and the last-reviewed HEAD behind the "Δ since last review" item (ADR-0005).
 - `walkthrough.ts` — converts agent walkthrough stops into agent comments (ADR-0001).
 - `review-view.ts` — the two-pane TUI overlay component, built on pi's `ctx.ui.custom()` overlay API.
 - `web-review.ts` — the browser surface: an ephemeral `127.0.0.1` server serving a GitHub-style review page (ADR-0003).

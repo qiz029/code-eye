@@ -11,7 +11,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { AddressInfo, Socket } from "node:net";
 import { basename } from "node:path";
 import {
+	commentsForSha,
 	removeCommentAt,
+	resolveAnchorState,
+	setCommentStatus,
 	upsertComment,
 	type ReviewComment,
 } from "./comments";
@@ -71,6 +74,8 @@ function parseAnchor(value: unknown): CommentAnchor | null {
 		line: a.line,
 	};
 	if (typeof a.lineText === "string") anchor.lineText = a.lineText;
+	if (typeof a.replyTo === "string") anchor.replyTo = a.replyTo;
+	if (typeof a.kind === "string") anchor.kind = a.kind;
 	return anchor;
 }
 
@@ -148,7 +153,11 @@ export function openWebReview(opts: WebReviewOptions): Promise<{ comments: Revie
 					lines = parseUnifiedDiff(raw);
 					diffCache.set(i, lines);
 				}
-				sendJSON(res, 200, { lines });
+				const states: Record<string, string> = {};
+				for (const c of commentsForSha([...userComments, ...agentComments], items[i]!.sha)) {
+					states[c.id] = resolveAnchorState(lines, c);
+				}
+				sendJSON(res, 200, { lines, states });
 				return;
 			}
 
@@ -181,13 +190,15 @@ export function openWebReview(opts: WebReviewOptions): Promise<{ comments: Revie
 					sendJSON(res, 400, { error: "invalid JSON body" });
 					return;
 				}
-				const body = parsed as { anchor?: unknown; body?: unknown };
+				const body = parsed as { anchor?: unknown; body?: unknown; status?: unknown };
 				const anchor = parseAnchor(body?.anchor);
-				if (!anchor || typeof body?.body !== "string") {
-					sendJSON(res, 400, { error: "expected { anchor, body }" });
+				const status = body?.status === "open" || body?.status === "resolved" ? body.status : null;
+				if (!anchor || (typeof body?.body !== "string" && !status)) {
+					sendJSON(res, 400, { error: "expected { anchor, body } or { anchor, status }" });
 					return;
 				}
-				userComments = upsertComment(userComments, anchor, body.body);
+				if (status) userComments = setCommentStatus(userComments, anchor, status);
+				if (typeof body?.body === "string") userComments = upsertComment(userComments, anchor, body.body);
 				sendJSON(res, 200, { userComments });
 				return;
 			}
@@ -340,8 +351,21 @@ main { flex: 1; min-width: 0; padding: 20px 24px; }
 .chip { font-size: 11px; color: var(--dim); border: 1px solid var(--border); border-radius: 10px; padding: 1px 8px; letter-spacing: .02em; }
 .card-title { font-weight: 600; color: var(--bright); margin-bottom: 4px; }
 .card-body { white-space: pre-wrap; }
-.card-actions { display: flex; gap: 8px; margin-top: 8px; }
+.card-actions { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
 .card.flash { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(88,166,255,.35); }
+.sev { font-size: 11px; border-radius: 10px; padding: 1px 8px; border: 1px solid; }
+.sev-high { color: var(--red); border-color: rgba(248,81,73,.4); background: rgba(248,81,73,.1); }
+.sev-medium { color: var(--amber); border-color: rgba(210,153,34,.4); background: rgba(210,153,34,.1); }
+.sev-low { color: var(--blue); border-color: rgba(56,139,253,.4); background: rgba(56,139,253,.1); }
+.b-state { background: rgba(210,153,34,.15); color: var(--amber); border: 1px solid rgba(210,153,34,.4); }
+.b-resolved { background: rgba(63,185,80,.15); color: var(--green); border: 1px solid rgba(63,185,80,.4); }
+.card.resolved { opacity: .55; }
+.card.resolved .card-body { display: none; }
+.card.stale { opacity: .6; border-left-color: var(--faint); }
+.card.reply { margin-left: 24px; padding: 6px 10px; font-size: 13px; max-width: 716px; box-shadow: none; }
+.sugg { margin: 8px 0 0; padding: 8px 10px; background: #010409; border: 1px solid var(--border); border-radius: 6px; font-family: var(--mono); font-size: 12px; line-height: 18px; white-space: pre; overflow-x: auto; }
+.adopted { color: var(--green); font-size: 12px; }
+.sevfilter { background: var(--bg2); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; font-size: 12px; }
 .editor-row { padding: 8px 12px 8px var(--gutters); width: max-content; min-width: 100%; }
 .editor-row textarea { width: 100%; max-width: 760px; min-width: min(760px, 60vw); min-height: 80px; background: #010409; color: var(--fg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font: inherit; resize: vertical; }
 .editor-row textarea:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px rgba(88,166,255,.3); }
@@ -374,7 +398,7 @@ main { flex: 1; min-width: 0; padding: 20px 24px; }
 <body>
 <header class="topbar">
 	<div class="brand"><span id="repo" class="mono"></span><span class="sep">/</span><span>Code Review</span></div>
-	<div class="stats"><span id="icount"></span><span id="ucount"></span><span class="hint">n/p agent &middot; [/] mine</span></div>
+	<div class="stats"><span id="icount"></span><span id="ucount"></span><select id="sevfilter" class="sevfilter" title="Filter agent notes by severity"><option value="all">All risks</option><option value="med">High+Medium</option><option value="high">High only</option></select><span class="hint">n/p agent &middot; [/] mine</span></div>
 	<div class="actions"><button id="collapseall" class="btn">Collapse all</button><button id="closebtn" class="btn">Close</button><button id="submit" class="btn primary">Submit review</button></div>
 </header>
 <div class="layout">
@@ -399,6 +423,10 @@ var collapsedState = {};
 // New-side file content per item|file -> array of lines (null = unavailable).
 var fileCache = {};
 var filePending = {};
+// Anchor state per comment id ("ok" | "changed" | "missing"), from /api/diff.
+var noteStates = {};
+// Severity filter for agent notes: "all" | "med" | "high".
+var severityFilter = "all";
 
 var HUNK_RE = /^@@ -(\\d+)(?:,(\\d+))? \\+(\\d+)(?:,(\\d+))? @@/;
 
@@ -731,6 +759,15 @@ function renderTop() {
 	document.getElementById("repo").textContent = session.repo || "repo";
 	document.getElementById("icount").textContent = plural(session.items.length, "item");
 	document.getElementById("ucount").textContent = plural(session.userComments.length, "comment");
+	document.getElementById("sevfilter").value = severityFilter;
+}
+
+function sevRank(c) {
+	return c.severity === "high" ? 3 : c.severity === "medium" ? 2 : c.severity === "low" ? 1 : 0;
+}
+
+function sevMinRank() {
+	return severityFilter === "high" ? 3 : severityFilter === "med" ? 2 : 0;
 }
 
 function renderSidebar() {
@@ -769,6 +806,7 @@ function loadDiff(i) {
 	return api("/api/diff?i=" + i).then(function (d) {
 		cache[i] = d.lines;
 		lines = d.lines;
+		if (d.states) for (var k in d.states) noteStates[k] = d.states[k];
 	});
 }
 
@@ -783,8 +821,10 @@ function commentMatches(c, line, sha) {
 
 function commentsOn(line, sha) {
 	var out = [];
-	session.userComments.forEach(function (c) { if (commentMatches(c, line, sha)) out.push(c); });
-	session.agentComments.forEach(function (c) { if (commentMatches(c, line, sha)) out.push(c); });
+	var minRank = sevMinRank();
+	// Replies render nested inside their agent note's card, never standalone.
+	session.userComments.forEach(function (c) { if (!c.replyTo && commentMatches(c, line, sha)) out.push(c); });
+	session.agentComments.forEach(function (c) { if (sevRank(c) >= minRank && commentMatches(c, line, sha)) out.push(c); });
 	return out;
 }
 
@@ -1085,35 +1125,124 @@ function diffRow(l, it, lang, hlState) {
 	return row;
 }
 
+function anchorOf(c) {
+	var a = { sha: c.sha, file: c.file, side: c.side, line: c.line };
+	if (c.replyTo) a.replyTo = c.replyTo;
+	return a;
+}
+
+function rowBefore(node) {
+	var crow = node.parentNode;
+	var rowEl = crow && crow.previousElementSibling;
+	return rowEl && rowEl._line ? rowEl : null;
+}
+
+function replyCard(r) {
+	var rc = el("div", "card reply user");
+	rc.id = "user-" + r.id;
+	rc.appendChild(el("div", "card-body", r.body));
+	var acts = el("div", "card-actions");
+	var editBtn = el("button", "btn small", "Edit");
+	editBtn.addEventListener("click", function () {
+		var rowEl = rowBefore(rc.parentNode);
+		if (rowEl) openEditor(rowEl, r, { replyTo: r.replyTo, kind: r.kind, placeholder: "Ask the agent about this note…" });
+	});
+	var delBtn = el("button", "btn small danger", "Delete");
+	delBtn.addEventListener("click", function () {
+		delBtn.disabled = true;
+		postJSON("/api/comments/delete", {
+			anchor: { sha: r.sha, file: r.file, side: r.side, line: r.line, replyTo: r.replyTo },
+		}).then(function (d) {
+			session.userComments = d.userComments;
+			refresh();
+		}).catch(function () { delBtn.disabled = false; });
+	});
+	acts.appendChild(editBtn);
+	acts.appendChild(delBtn);
+	rc.appendChild(acts);
+	return rc;
+}
+
 function commentCard(c) {
 	var isAgent = c.author === "agent";
-	var card = el("div", "card " + (isAgent ? "agent" : "user"));
+	var state = noteStates[c.id];
+	var cls = "card " + (isAgent ? "agent" : "user");
+	if (!isAgent && c.status === "resolved") cls += " resolved";
+	if (isAgent && state === "missing") cls += " stale";
+	var card = el("div", cls);
 	card.id = (isAgent ? "agent-" : "user-") + c.id;
 	var head = el("div", "card-head");
 	head.appendChild(el("span", "badge " + (isAgent ? "b-agent" : "b-user"), isAgent ? "🤖 agent" : "you"));
 	if (c.kind) head.appendChild(el("span", "chip", c.kind));
+	if (c.severity) head.appendChild(el("span", "sev sev-" + c.severity, c.severity));
+	if (!isAgent && c.status === "resolved") head.appendChild(el("span", "badge b-resolved", "resolved"));
+	if (state === "changed") head.appendChild(el("span", "badge b-state", "line changed"));
+	else if (state === "missing") head.appendChild(el("span", "badge b-state", isAgent ? "code changed" : "anchor lost"));
 	card.appendChild(head);
 	if (c.title) card.appendChild(el("div", "card-title", c.title));
 	card.appendChild(el("div", "card-body", c.body));
-	if (!isAgent) {
+	if (isAgent) {
+		if (c.suggestion) card.appendChild(el("pre", "sugg", c.suggestion));
+		session.userComments.forEach(function (u) {
+			if (u.replyTo === c.id && u.kind !== "adopt") card.appendChild(replyCard(u));
+		});
+		var acts = el("div", "card-actions");
+		var askBtn = el("button", "btn small", "Ask");
+		askBtn.addEventListener("click", function () {
+			var rowEl = rowBefore(card);
+			if (rowEl) openEditor(rowEl, null, { replyTo: c.id, kind: "question", note: c, placeholder: "Ask the agent about this note…" });
+		});
+		acts.appendChild(askBtn);
+		if (c.suggestion) {
+			var adopted = session.userComments.some(function (u) { return u.replyTo === c.id && u.kind === "adopt"; });
+			if (adopted) {
+				acts.appendChild(el("span", "adopted", "Adoption requested ✓"));
+			} else {
+				var adoptBtn = el("button", "btn small", "Adopt suggestion");
+				adoptBtn.addEventListener("click", function () {
+					adoptBtn.disabled = true;
+					postJSON("/api/comments", {
+						anchor: { sha: c.sha, file: c.file, side: c.side, line: c.line, lineText: c.lineText, replyTo: c.id, kind: "adopt" },
+						body: "Please apply this suggestion:\\n\`\`\`\\n" + c.suggestion + "\\n\`\`\`",
+					}).then(function (d) {
+						session.userComments = d.userComments;
+						refresh();
+					}).catch(function () { adoptBtn.disabled = false; });
+				});
+				acts.appendChild(adoptBtn);
+			}
+		}
+		card.appendChild(acts);
+	} else {
 		var acts = el("div", "card-actions");
 		var editBtn = el("button", "btn small", "Edit");
 		editBtn.addEventListener("click", function () {
-			var crow = card.parentNode;
-			var rowEl = crow && crow.previousElementSibling;
-			if (rowEl && rowEl._line) openEditor(rowEl, c);
+			var rowEl = rowBefore(card);
+			if (rowEl) openEditor(rowEl, c);
+		});
+		var resBtn = el("button", "btn small", c.status === "resolved" ? "Reopen" : "Resolve");
+		resBtn.addEventListener("click", function () {
+			resBtn.disabled = true;
+			postJSON("/api/comments", {
+				anchor: anchorOf(c),
+				status: c.status === "resolved" ? "open" : "resolved",
+			}).then(function (d) {
+				session.userComments = d.userComments;
+				refresh();
+			}).catch(function () { resBtn.disabled = false; });
 		});
 		var delBtn = el("button", "btn small danger", "Delete");
 		delBtn.addEventListener("click", function () {
 			delBtn.disabled = true;
 			postJSON("/api/comments/delete", {
-				anchor: { sha: c.sha, file: c.file, side: c.side, line: c.line },
+				anchor: anchorOf(c),
 			}).then(function (d) {
 				session.userComments = d.userComments;
 				refresh();
 			}).catch(function () { delBtn.disabled = false; });
 		});
 		acts.appendChild(editBtn);
+		acts.appendChild(resBtn);
 		acts.appendChild(delBtn);
 		card.appendChild(acts);
 	}
@@ -1127,13 +1256,13 @@ function closeEditor() {
 	}
 }
 
-function openEditor(row, existing) {
+function openEditor(row, existing, opts) {
 	closeEditor();
 	var l = row._line;
 	var it = row._item;
 	var er = el("div", "editor-row");
 	var ta = el("textarea");
-	ta.placeholder = "Leave a comment (Cmd/Ctrl+Enter to save, Esc to cancel)";
+	ta.placeholder = (opts && opts.placeholder) || "Leave a comment (Cmd/Ctrl+Enter to save, Esc to cancel)";
 	if (existing) ta.value = existing.body;
 	er.appendChild(ta);
 	var grow = function () {
@@ -1157,13 +1286,29 @@ function openEditor(row, existing) {
 	setTimeout(function () { ta.focus(); grow(); }, 0);
 
 	function doSave() {
-		var anchor = {
-			sha: it.sha,
-			file: l.file,
-			side: l.kind === "del" ? "old" : "new",
-			line: l.kind === "del" ? l.oldLine : l.newLine,
-			lineText: l.text,
-		};
+		var anchor;
+		if (opts && opts.replyTo) {
+			// Reply to an agent note: anchor to the note (or the reply's own
+			// anchor when editing), preserving replyTo/kind.
+			var n = existing || opts.note;
+			anchor = {
+				sha: n.sha,
+				file: n.file,
+				side: n.side,
+				line: n.line,
+				lineText: n.lineText,
+				replyTo: opts.replyTo,
+				kind: opts.kind,
+			};
+		} else {
+			anchor = {
+				sha: it.sha,
+				file: l.file,
+				side: l.kind === "del" ? "old" : "new",
+				line: l.kind === "del" ? l.oldLine : l.newLine,
+				lineText: l.text,
+			};
+		}
 		saveBtn.disabled = true;
 		postJSON("/api/comments", { anchor: anchor, body: ta.value }).then(function (d) {
 			session.userComments = d.userComments;
@@ -1215,7 +1360,9 @@ function scrollToCard(id) {
 
 function nav(kind, dir) {
 	if (!session) return;
-	var list = kind === "agent" ? session.agentComments : session.userComments;
+	var list = kind === "agent"
+		? session.agentComments.filter(function (c) { return sevRank(c) >= sevMinRank() && noteStates[c.id] !== "missing"; })
+		: session.userComments;
 	var ordered = orderedEntries(list);
 	if (!ordered.length) return;
 	navPtr[kind] = (navPtr[kind] + dir + ordered.length) % ordered.length;
@@ -1226,7 +1373,7 @@ function nav(kind, dir) {
 
 document.addEventListener("keydown", function (e) {
 	var t = e.target;
-	if (t && (t.tagName === "TEXTAREA" || t.tagName === "INPUT" || t.isContentEditable)) return;
+	if (t && (t.tagName === "TEXTAREA" || t.tagName === "INPUT" || t.tagName === "SELECT" || t.isContentEditable)) return;
 	if (e.metaKey || e.ctrlKey || e.altKey) return;
 	if (e.key === "n") nav("agent", 1);
 	else if (e.key === "p") nav("agent", -1);
@@ -1258,6 +1405,10 @@ document.getElementById("submit").addEventListener("click", function () {
 	closeReview("Review submitted");
 });
 document.getElementById("collapseall").addEventListener("click", toggleAllFiles);
+document.getElementById("sevfilter").addEventListener("change", function () {
+	severityFilter = this.value;
+	refresh();
+});
 document.getElementById("closebtn").addEventListener("click", function () {
 	closeReview("Review closed");
 });

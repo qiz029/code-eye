@@ -20,6 +20,11 @@ export interface WalkthroughStop {
 	line?: number;
 	/** Optional categorization, shown as a tag. */
 	kind?: string;
+	/** Risk level, shown as a colored chip and used by the web risk filter. */
+	severity?: "high" | "medium" | "low";
+	/** Replacement code the agent suggests for the anchored line(s).
+	 * Read-only: the user adopts it via a reply, never applied directly. */
+	suggestion?: string;
 }
 
 /**
@@ -53,6 +58,8 @@ export function stopsToReviewComments(
 			title: stop.title,
 			body: stop.detail,
 			kind: stop.kind,
+			severity: stop.severity,
+			suggestion: stop.suggestion,
 		});
 	}
 	return { comments, summaries };

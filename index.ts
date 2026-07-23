@@ -1,8 +1,15 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { CommentStore, formatCommentsForAgent, userComments, type ReviewComment } from "./comments";
-import { listReviewItems, loadDiff, loadFileContent } from "./git";
+import {
+	CommentStore,
+	formatCommentsForAgent,
+	pruneComments,
+	userComments,
+	type ReviewComment,
+} from "./comments";
+import { getHeadSha, listReviewItems, loadDiff, loadFileContent } from "./git";
+import { loadReviewState, saveReviewState } from "./review-state";
 import { ReviewView } from "./review-view";
 import { stopsToReviewComments, type WalkthroughStop } from "./walkthrough";
 import { openWebReview } from "./web-review";
@@ -16,11 +23,15 @@ For each stop provide:
 - title: short headline
 - detail: the context I need to evaluate it
 - kind: optional tag like change / risk / note
+- severity: for risky stops, one of high / medium / low (drives the risk filter)
+- suggestion: optional replacement code for the anchored line(s) — only when you have a concrete fix to propose; shown read-only, I can ask you to apply it
 
 Only point stops at lines that actually appear in the diff (added or context lines). Prefer the first changed line of each conceptual edit.`;
 
-/** Session-scoped: user comments survive reopen until the pi process exits (ADR-0001). */
+/** Session-scoped: user comments survive reopen until the pi process exits (ADR-0001).
+ * Seeded from / flushed to disk on first open / every close (ADR-0005). */
 const commentStore = new CommentStore();
+let storeSeeded = false;
 
 function textResult(text: string) {
 	return { content: [{ type: "text" as const, text }], details: {} };
@@ -46,8 +57,23 @@ async function openReview(
 	ctx: ExtensionContext,
 	opts: OpenReviewOptions = {},
 ): Promise<{ comments: ReviewComment[] } | null> {
-	const items = await listReviewItems(ctx.cwd);
+	// ADR-0005: on-disk state feeds the delta item and seeds persisted comments.
+	const state = await loadReviewState(ctx.cwd);
+	const items = await listReviewItems(ctx.cwd, { since: state.lastReviewedHead });
 	if (items.length === 0) return null;
+
+	if (!storeSeeded) {
+		storeSeeded = true;
+		commentStore.replace(pruneComments(state.comments, items));
+	}
+
+	// The delta item (sha null + since) diffs the working tree against the
+	// last-reviewed commit instead of HEAD.
+	const deltaSince = items.find((i) => i.since)?.since;
+	const loadDiffFor = (sha: string | null) =>
+		sha === null && deltaSince ? loadDiff(ctx.cwd, null, deltaSince) : loadDiff(ctx.cwd, sha);
+	const loadFileFor = (sha: string | null, file: string, side: "new" | "old") =>
+		loadFileContent(ctx.cwd, sha, file, side, sha === null ? deltaSince : undefined);
 
 	let all: ReviewComment[];
 	if (opts.surface === "web") {
@@ -58,18 +84,18 @@ async function openReview(
 			agentComments: split.comments,
 			summaries: split.summaries,
 			initialComments: commentStore.list(),
-			loadDiffFor: (sha) => loadDiff(ctx.cwd, sha),
-			loadFileFor: (sha, file, side) => loadFileContent(ctx.cwd, sha, file, side),
+			loadDiffFor,
+			loadFileFor,
 		});
 		all = result.comments;
 	} else {
-		const initialDiff = await loadDiff(ctx.cwd, items[0]!.sha);
+		const initialDiff = await loadDiffFor(items[0]!.sha);
 		const result = await ctx.ui.custom<{ comments: ReviewComment[] }>(
 			(tui, theme, _keybindings, done) =>
 				new ReviewView({
 					items,
 					initialDiff,
-					loadDiffFor: (sha) => loadDiff(ctx.cwd, sha),
+					loadDiffFor,
 					theme,
 					tui,
 					done,
@@ -92,6 +118,12 @@ async function openReview(
 	// ADR-0002: only user comments persist and may re-trigger the agent.
 	const comments = userComments(all);
 	commentStore.replace(comments);
+	// ADR-0005: persist across sessions; record HEAD for the next delta item.
+	await saveReviewState(ctx.cwd, {
+		version: 1,
+		comments: commentStore.list(),
+		lastReviewedHead: (await getHeadSha(ctx.cwd)) ?? undefined,
+	});
 
 	if (opts.sendCommentsAsFollowUp && comments.length > 0) {
 		pi.sendUserMessage(formatCommentsForAgent(comments), { deliverAs: "followUp" });
@@ -148,6 +180,8 @@ export default function (pi: ExtensionAPI) {
 			"and uncommitted changes; walkthrough stops point the user at the most important or risky spots. " +
 			"The user can leave line comments on the diff. " +
 			"The tool blocks until the user closes the panel and returns any comments they left — address each one. " +
+			"Comments the user marked resolved are not returned. Replies to your walkthrough notes come back " +
+			"tagged as questions or suggestion-adoption requests. " +
 			"Closing without comments means the review is accepted; do not treat it as a request for more work.",
 		parameters: Type.Object({
 			summary: Type.Optional(Type.String({ description: "One-paragraph overview of what changed and why" })),
@@ -164,6 +198,17 @@ export default function (pi: ExtensionAPI) {
 						file: Type.Optional(Type.String({ description: "File path within that commit's diff" })),
 						line: Type.Optional(Type.Number({ description: "Line number in the new version of the file" })),
 						kind: Type.Optional(Type.String({ description: "Category tag, e.g. change, risk, note" })),
+						severity: Type.Optional(
+							Type.Union([Type.Literal("high"), Type.Literal("medium"), Type.Literal("low")], {
+								description: "Risk level for risky stops; shown as a colored chip and drives the risk filter",
+							}),
+						),
+						suggestion: Type.Optional(
+							Type.String({
+								description:
+									"Replacement code for the anchored line(s); shown read-only, the user can ask you to apply it",
+							}),
+						),
 					}),
 				),
 			),

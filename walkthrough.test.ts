@@ -36,3 +36,27 @@ test("anchored stops become agent comments; file-less stops stay summaries", () 
 	assert.equal(c1.sha, null); // no sha → uncommitted entry
 	assert.equal(c1.line, 1); // default anchor line
 });
+
+test("severity and suggestion ride from stop to agent comment", () => {
+	const { comments } = stopsToReviewComments(
+		[
+			{
+				title: "SQL injection risk",
+				detail: "unescaped input",
+				file: "src/db.ts",
+				line: 10,
+				kind: "risk",
+				severity: "high",
+				suggestion: "db.query(sql, [id])",
+			},
+		],
+		items,
+	);
+	assert.equal(comments.length, 1);
+	assert.equal(comments[0]!.severity, "high");
+	assert.equal(comments[0]!.suggestion, "db.query(sql, [id])");
+	// Stops without the new fields leave them undefined.
+	const plain = stopsToReviewComments([{ title: "t", detail: "d", file: "src/db.ts" }], items);
+	assert.equal(plain.comments[0]!.severity, undefined);
+	assert.equal(plain.comments[0]!.suggestion, undefined);
+});

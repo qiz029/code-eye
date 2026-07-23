@@ -51,7 +51,7 @@
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit",
-		"test": "npx tsx --test comments.test.ts locate.test.ts walkthrough.test.ts",
+		"test": "npx tsx --test comments.test.ts locate.test.ts walkthrough.test.ts review-state.test.ts git-delta.test.ts",
 		"build": "esbuild mcp-server.ts --bundle --platform=node --format=esm --target=node18 --outfile=dist/code-eye-mcp.mjs && chmod +x dist/code-eye-mcp.mjs",
 		"prepublishOnly": "npm run build"
 	}
